@@ -10,6 +10,9 @@ export const templates = {
   
   supplierOffer: (data: {
     product_name: string;
+    category?: string;
+    product_notes?: string;
+    delivery_notes?: string;
     quantity: number;
     unit: string;
     weight_kg: number;
@@ -22,6 +25,7 @@ export const templates = {
 Produk: ${data.product_name}
 Jumlah: ${data.quantity} ${data.unit}
 Berat estimasi: ${data.weight_kg} kg
+${data.category ? `Kategori: ${data.category}\n` : ''}${data.product_notes ? `Spesifikasi: ${data.product_notes}\n` : ''}${data.delivery_notes ? `Catatan Lokasi: ${data.delivery_notes}\n` : ''}
 Lokasi Pembeli: ${data.buyer_address}
 Jarak: ${data.distance_km} km
 Harga yang diajukan: Rp ${formatCurrency(data.buyer_price)}

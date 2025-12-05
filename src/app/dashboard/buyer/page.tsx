@@ -6,10 +6,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { CreateOrderForm } from '@/components/create-order-form';
 import { AgentLogConsole } from '@/components/agent-log-console';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -32,7 +29,6 @@ export default function BuyerDashboardPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
-  const [showCreateForm, setShowCreateForm] = useState(false);
   const supabase = createClient();
 
   // Fetch buyer's orders
@@ -126,11 +122,15 @@ export default function BuyerDashboardPage() {
     ).length,
   };
 
-  // Handle new order success
-  const handleOrderSuccess = (orderId: string) => {
-    setSelectedOrderId(orderId);
-    setShowCreateForm(false);
-    toast.success('Pesanan berhasil dibuat! Sistem sedang mencari supplier...');
+  // Handle new order success (multi-order support)
+  const handleOrderSuccess = (orderIds: string[]) => {
+    const firstId = orderIds[0];
+    if (firstId) setSelectedOrderId(firstId);
+    toast.success(
+      orderIds.length > 1
+        ? `Berhasil membuat ${orderIds.length} pesanan! Sistem sedang mencari supplier...`
+        : 'Pesanan berhasil dibuat! Sistem sedang mencari supplier...'
+    );
   };
 
   // Categorize orders
@@ -142,105 +142,85 @@ export default function BuyerDashboardPage() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <DashboardHeader onCreateOrder={() => setShowCreateForm(true)} />
+    <div className="min-h-screen xl:h-screen flex flex-col bg-slate-50 xl:overflow-hidden">
+      <DashboardHeader />
 
-      <main className="container mx-auto px-4 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Content - Left 2 columns */}
-          <div className="lg:col-span-2 space-y-6">
+      <main className="flex-1 container mx-auto px-4 lg:px-8 py-4 xl:overflow-hidden">
+        <div className="xl:h-full grid grid-cols-1 xl:grid-cols-12 gap-4">
+          {/* Main Content - Left section */}
+          <div className="xl:col-span-8 flex flex-col gap-4 xl:overflow-hidden">
             <BuyerStats counts={orderCounts} />
 
-            {/* Create Order Form - Shown when button clicked */}
-            <AnimatePresence>
-              {showCreateForm && (
-                <motion.div
-                  initial={{ opacity: 0, y: -20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <Card className="bg-white border-2 border-emerald-200">
-                    <CardHeader className="flex flex-row items-center justify-between">
-                      <CardTitle className="text-lg">Buat Pesanan Baru</CardTitle>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setShowCreateForm(false)}
-                      >
-                        Batal
-                      </Button>
-                    </CardHeader>
-                    <CardContent>
-                      <CreateOrderForm
-                        buyerId={DEMO_BUYER_ID}
-                        onSuccess={handleOrderSuccess}
-                      />
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {/* Orders Section */}
+            <div className="xl:flex-1 bg-white rounded-xl shadow-sm border border-slate-100 p-4 xl:overflow-hidden flex flex-col min-h-[400px] xl:min-h-0">
+              <Tabs defaultValue="active" className="h-full flex flex-col">
+                <TabsList className="w-full max-w-xs bg-slate-100/80 p-1 rounded-lg shrink-0">
+                  <TabsTrigger 
+                    value="active" 
+                    className="flex-1 rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm gap-2 text-sm"
+                  >
+                    <Package className="w-4 h-4" />
+                    <span>Aktif</span>
+                    {orderCounts.active > 0 && (
+                      <Badge className="bg-emerald-500 text-white text-[10px] px-1.5 py-0 h-5 ml-1">
+                        {orderCounts.active}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger 
+                    value="history" 
+                    className="flex-1 rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm gap-2 text-sm"
+                  >
+                    <History className="w-4 h-4" />
+                    <span>Riwayat</span>
+                  </TabsTrigger>
+                </TabsList>
 
-            {/* Orders Tabs */}
-            <Tabs defaultValue="active" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 bg-slate-100">
-                <TabsTrigger value="active" className="flex items-center gap-2">
-                  <Package className="w-4 h-4" />
-                  Aktif
-                  {orderCounts.active > 0 && (
-                    <Badge className="bg-emerald-600 text-white text-xs">
-                      {orderCounts.active}
-                    </Badge>
-                  )}
-                </TabsTrigger>
-                <TabsTrigger value="history" className="flex items-center gap-2">
-                  <History className="w-4 h-4" />
-                  Riwayat
-                </TabsTrigger>
-              </TabsList>
+                <TabsContent value="active" className="flex-1 overflow-hidden mt-0">
+                  <ActiveOrdersList
+                    orders={activeOrders}
+                    isLoading={isLoading}
+                    onRefresh={fetchOrders}
+                    buyerId={DEMO_BUYER_ID}
+                    onOrderSuccess={handleOrderSuccess}
+                    selectedOrderId={selectedOrderId}
+                    onSelectOrder={setSelectedOrderId}
+                  />
+                </TabsContent>
 
-              <TabsContent value="active">
-                <ActiveOrdersList
-                  orders={activeOrders}
-                  isLoading={isLoading}
-                  onRefresh={fetchOrders}
-                  onCreateOrder={() => setShowCreateForm(true)}
-                  selectedOrderId={selectedOrderId}
-                  onSelectOrder={setSelectedOrderId}
-                />
-              </TabsContent>
-
-              <TabsContent value="history">
-                <OrderHistoryList
-                  orders={historyOrders}
-                  selectedOrderId={selectedOrderId}
-                  onSelectOrder={setSelectedOrderId}
-                />
-              </TabsContent>
-            </Tabs>
+                <TabsContent value="history" className="flex-1 overflow-hidden mt-0">
+                  <OrderHistoryList
+                    orders={historyOrders}
+                    selectedOrderId={selectedOrderId}
+                    onSelectOrder={setSelectedOrderId}
+                  />
+                </TabsContent>
+              </Tabs>
+            </div>
           </div>
 
-          {/* System Activity Log - Right sidebar */}
-          <div className="lg:col-span-1">
-            <div className="sticky top-24">
-              <Card className="bg-slate-900 border-slate-700">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-white flex items-center gap-2 text-base">
-                    <Truck className="w-5 h-5 text-emerald-400" />
-                    Status Aktivitas
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <AgentLogConsole
-                    orderId={selectedOrderId || undefined}
-                    maxHeight="500px"
-                  />
-                </CardContent>
-              </Card>
+          {/* Right Sidebar */}
+          <div className="xl:col-span-4 flex flex-col gap-4 xl:overflow-hidden">
+            {/* Activity Log */}
+            <Card className="xl:flex-1 bg-slate-900 border-0 shadow-lg overflow-hidden flex flex-col min-h-[300px] xl:min-h-0">
+              <CardHeader className="py-3 px-4 border-b border-slate-700/50 shrink-0">
+                <CardTitle className="text-white flex items-center gap-2 text-sm">
+                  <div className="relative">
+                    <Truck className="w-4 h-4 text-emerald-400" />
+                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
+                  </div>
+                  Live Activity
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0 flex-1 overflow-hidden">
+                <AgentLogConsole
+                  orderId={selectedOrderId || undefined}
+                  maxHeight="100%"
+                />
+              </CardContent>
+            </Card>
 
-              <QuickHelpCard />
-            </div>
+            <QuickHelpCard />
           </div>
         </div>
       </main>

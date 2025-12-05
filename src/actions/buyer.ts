@@ -15,6 +15,9 @@ import { revalidatePath } from 'next/cache';
 interface RequestItemInput {
   buyerId: string;
   productName: string;
+  category?: string;
+  productNotes?: string;
+  deliveryNotes?: string;
   quantity: number;
   unit: string;
   estimatedWeight: number;
@@ -108,6 +111,9 @@ export async function actionRequestItem(
       // Send WhatsApp
       const message = templates.supplierOffer({
         product_name: input.productName,
+        category: input.category,
+        product_notes: input.productNotes,
+        delivery_notes: input.deliveryNotes,
         quantity: input.quantity,
         unit: input.unit,
         weight_kg: input.estimatedWeight,
@@ -127,9 +133,14 @@ export async function actionRequestItem(
     await (supabase.from('agent_logs') as any).insert({
       order_id: order.id,
       iteration: 1,
-      thought: `Buyer requested ${input.productName}. Broadcasting to ${suppliersResult.found} suppliers.`,
+      thought: `Buyer requested ${input.productName}${input.category ? ` [${input.category}]` : ''}. Broadcasting to ${suppliersResult.found} suppliers.`,
       action: 'broadcastToSuppliers',
-      action_input: { suppliers: suppliersResult.suppliers.map((s: { id: string }) => s.id) },
+      action_input: {
+        suppliers: suppliersResult.suppliers.map((s: { id: string }) => s.id),
+        category: input.category,
+        productNotes: input.productNotes,
+        deliveryNotes: input.deliveryNotes,
+      },
       observation: `Broadcasted to ${suppliersResult.found} suppliers`,
     });
     
