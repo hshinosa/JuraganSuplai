@@ -59,8 +59,8 @@ export async function handleSupplierAccept(
   
   try {
     // Update order_broadcasts to mark response
-    const { error: broadcastError } = await supabase
-      .from('order_broadcasts')
+    const { error: broadcastError } = await (supabase
+      .from('order_broadcasts') as any)
       .update({
         response: 'SANGGUP',
         responded_at: new Date().toISOString(),
@@ -71,8 +71,8 @@ export async function handleSupplierAccept(
     if (broadcastError) throw broadcastError;
     
     // Update order with supplier acceptance
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
+    const { data: order, error: orderError } = await (supabase
+      .from('orders') as any)
       .update({
         supplier_id: supplierId,
         supplier_offered_price: offeredPrice,
@@ -86,8 +86,8 @@ export async function handleSupplierAccept(
     if (orderError) throw orderError;
     
     // Get buyer info to notify them
-    const { data: buyer, error: buyerError } = await supabase
-      .from('users')
+    const { data: buyer, error: buyerError } = await (supabase
+      .from('users') as any)
       .select('phone, name')
       .eq('id', order.buyer_id)
       .single();
@@ -95,8 +95,8 @@ export async function handleSupplierAccept(
     if (buyerError) throw buyerError;
     
     // Get supplier info
-    const { data: supplier, error: supplierError } = await supabase
-      .from('users')
+    const { data: supplier, error: supplierError } = await (supabase
+      .from('users') as any)
       .select('name')
       .eq('id', supplierId)
       .single();
@@ -139,8 +139,8 @@ export async function handleSupplierReject(
   
   try {
     // Update order_broadcasts to mark response
-    const { error: broadcastError } = await supabase
-      .from('order_broadcasts')
+    const { error: broadcastError } = await (supabase
+      .from('order_broadcasts') as any)
       .update({
         response: 'TIDAK',
         responded_at: new Date().toISOString(),
@@ -151,21 +151,21 @@ export async function handleSupplierReject(
     if (broadcastError) throw broadcastError;
     
     // Get supplier info
-    const { data: supplier, error: supplierError } = await supabase
-      .from('users')
+    const { data: supplier, error: supplierError } = await (supabase
+      .from('users') as any)
       .select('name')
       .eq('id', supplierId)
       .single();
-    
+
     if (supplierError) throw supplierError;
-    
+
     // Notify supplier
     const supplierMsg = `👋 Baik, terima kasih atas respons. Pesanan #${orderId} ditolak.`;
     await sendWhatsApp({ phone, message: supplierMsg });
     
     // Check if there are other pending responses
-    const { data: broadcasts, error: broadcastsError } = await supabase
-      .from('order_broadcasts')
+    const { data: broadcasts, error: broadcastsError } = await (supabase
+      .from('order_broadcasts') as any)
       .select('*')
       .eq('order_id', orderId)
       .is('responded_at', null);
@@ -174,8 +174,8 @@ export async function handleSupplierReject(
     
     if (!broadcasts || broadcasts.length === 0) {
       // No more pending responses - order failed
-      const { error: updateError } = await supabase
-        .from('orders')
+      const { error: updateError } = await (supabase
+        .from('orders') as any)
         .update({
           status: 'failed_no_supplier',
           updated_at: new Date().toISOString(),
@@ -187,15 +187,15 @@ export async function handleSupplierReject(
       console.log(`[TIDAK] Order ${orderId} failed - no suppliers accepted`);
       
       // Notify buyer
-      const { data: order, error: orderError } = await supabase
-        .from('orders')
+      const { data: order, error: orderError } = await (supabase
+        .from('orders') as any)
         .select('buyer_id')
         .eq('id', orderId)
         .single();
       
       if (order && !orderError) {
-        const { data: buyer } = await supabase
-          .from('users')
+        const { data: buyer } = await (supabase
+          .from('users') as any)
           .select('phone')
           .eq('id', order.buyer_id)
           .single();
@@ -237,8 +237,8 @@ export async function handleBuyerApproval(
   try {
     if (approved) {
       // Move to payment stage
-      const { error: updateError } = await supabase
-        .from('orders')
+      const { error: updateError } = await (supabase
+        .from('orders') as any)
         .update({
           status: 'waiting_payment',
           updated_at: new Date().toISOString(),
@@ -248,8 +248,8 @@ export async function handleBuyerApproval(
       if (updateError) throw updateError;
       
       // Get order details
-      const { data: order, error: orderError } = await supabase
-        .from('orders')
+      const { data: order, error: orderError } = await (supabase
+        .from('orders') as any)
         .select('total_amount, supplier_id')
         .eq('id', orderId)
         .single();
@@ -261,8 +261,8 @@ export async function handleBuyerApproval(
       await sendWhatsApp({ phone, message: buyerMsg });
       
       // Notify supplier
-      const { data: supplier } = await supabase
-        .from('users')
+      const { data: supplier } = await (supabase
+        .from('users') as any)
         .select('phone')
         .eq('id', order.supplier_id)
         .single();
@@ -275,8 +275,8 @@ export async function handleBuyerApproval(
       return 'Order approved. Buyer moved to payment stage.';
     } else {
       // Buyer rejected - keep searching
-      const { error: updateError } = await supabase
-        .from('orders')
+      const { error: updateError } = await (supabase
+        .from('orders') as any)
         .update({
           supplier_id: null,
           supplier_offered_price: null,

@@ -222,6 +222,19 @@ CREATE TABLE pending_messages (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Track sent messages to prevent reprocessing webhook callbacks
+CREATE TABLE sent_messages (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  phone VARCHAR(20) NOT NULL,
+  message TEXT NOT NULL,
+  message_id VARCHAR(255),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Create index for faster lookups
+CREATE INDEX idx_sent_messages_phone_created ON sent_messages(phone, created_at DESC);
+CREATE INDEX idx_sent_messages_message_id ON sent_messages(message_id);
+
 -- Agent conversation history
 CREATE TABLE agent_conversations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

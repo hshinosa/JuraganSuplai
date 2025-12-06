@@ -1,62 +1,43 @@
-'use client';
-
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { 
-  MessageCircle, 
-  Phone, 
-  FileText, 
-  ChevronRight,
-  HeadphonesIcon
-} from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
 
 export function QuickHelpCard() {
   return (
-    <div className="mt-4">
-      {/* Help Center */}
-      <Card className="bg-gradient-to-br from-slate-900 to-slate-800 border-0 overflow-hidden">
-        <div className="p-4">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-emerald-500/20 rounded-lg">
-              <HeadphonesIcon className="w-5 h-5 text-emerald-400" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-white">Butuh Bantuan?</h3>
-              <p className="text-xs text-slate-400">Tim support kami siap membantu</p>
-            </div>
-          </div>
-          
-          <div className="grid grid-cols-2 gap-2">
-            <Button 
-              variant="outline" 
-              size="sm" 
-              className="bg-white/10 border-white/20 text-white hover:bg-white/20 justify-start"
-            >
-              <MessageCircle className="w-4 h-4 mr-2" />
-              Chat
-            </Button>
-            <Button 
-              variant="outline" 
-              size="sm" 
-              className="bg-white/10 border-white/20 text-white hover:bg-white/20 justify-start"
-            >
-              <Phone className="w-4 h-4 mr-2" />
-              Telepon
-            </Button>
-          </div>
-          
-          <Button 
-            variant="link" 
-            className="w-full mt-3 text-emerald-400 hover:text-emerald-300 p-0 h-auto justify-between"
-          >
-            <span className="flex items-center gap-2">
-              <FileText className="w-4 h-4" />
-              Lihat Panduan Lengkap
+    <Card className="bg-white mt-4">
+      <CardContent className="p-4">
+        <h3 className="font-semibold text-slate-900 mb-3">Cara Kerja</h3>
+        <ol className="text-sm text-slate-600 space-y-2">
+          <li className="flex items-start gap-2">
+            <span className="bg-emerald-100 text-emerald-700 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">
+              1
             </span>
-            <ChevronRight className="w-4 h-4" />
-          </Button>
-        </div>
-      </Card>
-    </div>
+            <span>Buat pesanan dengan detail produk</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="bg-emerald-100 text-emerald-700 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">
+              2
+            </span>
+            <span>Sistem mencari supplier terdekat</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="bg-emerald-100 text-emerald-700 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">
+              3
+            </span>
+            <span>Bayar dengan QRIS</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="bg-emerald-100 text-emerald-700 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">
+              4
+            </span>
+            <span>Lacak pengiriman realtime</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="bg-emerald-100 text-emerald-700 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">
+              5
+            </span>
+            <span>Scan QR untuk konfirmasi terima</span>
+          </li>
+        </ol>
+      </CardContent>
+    </Card>
   );
 }
