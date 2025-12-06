@@ -84,6 +84,8 @@ CREATE TABLE users (
   
   -- Supplier specific
   business_name VARCHAR(255),
+  -- Supplier categories (one supplier can belong to multiple categories)
+  categories TEXT[] DEFAULT ARRAY[]::TEXT[],
   
   -- Courier specific
   vehicle vehicle_type,
@@ -255,6 +257,9 @@ CREATE INDEX idx_orders_pickup_location ON orders USING GIST(pickup_location);
 CREATE INDEX idx_orders_delivery_location ON orders USING GIST(delivery_location);
 CREATE INDEX idx_orders_courier_location ON orders USING GIST(courier_last_location);
 
+-- Index for categories array on users
+CREATE INDEX IF NOT EXISTS idx_users_categories ON users USING GIN (categories);
+
 -- Text search indexes
 CREATE INDEX idx_products_name_trgm ON products USING GIN(name gin_trgm_ops);
 
@@ -301,11 +306,11 @@ CREATE TRIGGER update_pending_messages_updated_at BEFORE UPDATE ON pending_messa
 -- RPC FUNCTIONS
 -- ==============================================
 
--- Find nearby suppliers with products
+-- Find nearby suppliers with products (filter by supplier category)
 CREATE OR REPLACE FUNCTION find_nearby_suppliers(
   lat DOUBLE PRECISION,
   lng DOUBLE PRECISION,
-  search_term TEXT,
+  category TEXT,
   radius_km INTEGER DEFAULT 10,
   max_results INTEGER DEFAULT 5
 )
@@ -336,7 +341,8 @@ BEGIN
   WHERE u.role = 'supplier'
     AND u.is_verified = true
     AND p.is_active = true
-    AND (search_term IS NULL OR p.name ILIKE '%' || search_term || '%')
+    -- If category is provided, only include suppliers that have that category in their categories array
+    AND (category IS NULL OR u.categories @> ARRAY[category])
     AND ST_DWithin(
       u.location::geography,
       ST_MakePoint(lng, lat)::geography,
