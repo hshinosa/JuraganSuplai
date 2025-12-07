@@ -5,6 +5,16 @@ import { MessageCircle } from 'lucide-react';
 import Link from 'next/link';
 
 export function CTASection() {
+  // Get WhatsApp number from environment variable
+  const whatsappNumber = process.env.NEXT_PUBLIC_FONNTE_DEVICE || '081234567890';
+  // Format for wa.me (ensure international format without +)
+  const formattedNumber = whatsappNumber.startsWith('62') 
+    ? whatsappNumber  // Already in international format
+    : whatsappNumber.startsWith('0') 
+      ? `62${whatsappNumber.substring(1)}`  // Convert 08xx to 628xx
+      : `62${whatsappNumber}`;  // Add 62 prefix if missing
+  const whatsappUrl = `https://wa.me/${formattedNumber}?text=daftar`;
+
   return (
     <section className="py-20">
       <div className="container mx-auto px-4">
@@ -29,10 +39,12 @@ export function CTASection() {
                   Mulai Belanja Sekarang
                 </Button>
               </Link>
-              <Button size="lg" variant="outline" className="border-emerald-700 text-white hover:bg-emerald-800 text-lg px-8 h-14 rounded-full bg-transparent">
-                <MessageCircle className="w-5 h-5 mr-2" />
-                Konsultasi Gratis
-              </Button>
+              <a href={whatsappUrl} target="_blank" rel="noopener noreferrer">
+                <Button size="lg" variant="outline" className="border-emerald-700 text-white hover:bg-emerald-800 text-lg px-8 h-14 rounded-full bg-transparent">
+                  <MessageCircle className="w-5 h-5 mr-2" />
+                  Daftar Mitra
+                </Button>
+              </a>
             </div>
           </div>
         </div>

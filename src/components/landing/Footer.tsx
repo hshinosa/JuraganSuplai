@@ -12,7 +12,7 @@ export function Footer() {
               <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
                 <Package className="w-5 h-5 text-white" />
               </div>
-              <span className="text-xl font-bold text-slate-900">JuraganSuplai</span>
+              <span className="text-xl font-bold text-slate-900">Juragan Suplai</span>
             </div>
             <p className="text-slate-500 leading-relaxed mb-6">
               Platform B2B logistics modern yang menghubungkan pembeli dengan supplier lokal terdekat untuk efisiensi rantai pasok Indonesia.
