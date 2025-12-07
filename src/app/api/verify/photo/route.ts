@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/server';
 import { mapStepToDatabase } from '@/lib/onboarding/handler';
 import { sendWhatsApp } from '@/lib/ai/tools/send-whatsapp';
+import { getCategoryNames, type CategoryId } from '@/lib/onboarding/categories';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
@@ -244,21 +245,57 @@ Return ONLY valid JSON (no markdown): { "face_visible": boolean, "face_clear": b
         console.log('[Verify Photo] Using MVP mode - auto-accepting Selfie');
         
         const supabase = createAdminClient();
-        const userData = await (supabase
+        
+        // Get full user data including role
+        const { data: userData, error: selectError } = await (supabase
           .from('users') as any)
-          .select('onboarding_data')
+          .select('onboarding_data, role')
           .eq('phone', phone)
           .single();
 
-        const onboardingData = userData.data?.onboarding_data || {};
+        if (selectError) {
+          console.error('[Verify Photo] Failed to get user data:', selectError);
+        }
+
+        const onboardingData = userData?.onboarding_data || {};
+        const userRole = userData?.role;
+        
         onboardingData.selfieVerified = true;
+        
+        console.log('[Verify Photo] User role:', userRole);
+        console.log('[Verify Photo] Onboarding data:', JSON.stringify(onboardingData));
+        console.log('[Verify Photo] Categories from onboardingData:', onboardingData.categories);
+
+        // Prepare update data
+        const updateData: any = {
+          phone,
+          onboarding_step: mapStepToDatabase('completed'),
+          is_verified: true,
+          onboarding_data: onboardingData,
+          name: onboardingData.name,
+          address: onboardingData.address,
+        };
+        
+        // Add supplier-specific fields
+        if (userRole === 'supplier') {
+          if (onboardingData.categories && onboardingData.categories.length > 0) {
+            updateData.categories = onboardingData.categories;
+            console.log('[Verify Photo] Setting categories for supplier:', onboardingData.categories);
+          } else {
+            console.warn('[Verify Photo] WARNING: Categories empty for supplier!');
+          }
+          if (onboardingData.businessName) {
+            updateData.business_name = onboardingData.businessName;
+          }
+        }
+        
+        // Add courier-specific fields
+        if (userRole === 'courier' && onboardingData.vehicle) {
+          updateData.vehicle = onboardingData.vehicle;
+        }
 
         const { error: upsertError } = await (supabase.from('users') as any).upsert(
-          {
-            phone,
-            onboarding_data: onboardingData,
-            onboarding_step: mapStepToDatabase('completed'),
-          },
+          updateData,
           { onConflict: 'phone' }
         );
         
@@ -277,10 +314,22 @@ Return ONLY valid JSON (no markdown): { "face_visible": boolean, "face_clear": b
         
         console.log(`[Verify Photo] Verification fetch (Selfie) - data:`, verifyData, 'error:', verifyError);
         
+        // Send role-specific completion message
+        let completionMessage = '';
+        if (userRole === 'supplier') {
+          const categoryNames = getCategoryNames(onboardingData.categories || []);
+          completionMessage = `✅ *Pendaftaran Supplier Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Toko: *${onboardingData.businessName}*\n• Kategori: *${categoryNames}*\n\n🎉 Profil Anda sudah aktif dan terverifikasi!\n\nAnda siap menerima pesanan dari pembeli. Tunggu broadcast order di WhatsApp Anda.`;
+        } else if (userRole === 'courier') {
+          const vehicleEmoji = onboardingData.vehicle === 'motor' ? '🏍️' : onboardingData.vehicle === 'mobil' ? '🚙' : '🚗🏍️';
+          completionMessage = `✅ *Pendaftaran Kurir Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Kendaraan: *${vehicleEmoji} ${onboardingData.vehicle?.toUpperCase()}*\n\n🎉 Profil Anda sudah aktif dan terverifikasi!\n\nAnda siap menerima penawaran antar barang. Tunggu pesan dari sistem.`;
+        } else {
+          completionMessage = '✅ Selfie Anda berhasil diverifikasi!\n\n🎉 *Pendaftaran Selesai!*\n\nAkun Anda sudah terdaftar dan terverifikasi.\n\nTerima kasih telah bergabung dengan Juragan Suplai!';
+        }
+        
         // Send WhatsApp notification
         await sendWhatsApp({
           phone,
-          message: '✅ Selfie Anda berhasil diverifikasi!\n\n🎉 *Pendaftaran Selesai!*\n\nAkun Anda sudah terdaftar dan sedang menunggu persetujuan dari admin.\n\nTerima kasih telah bergabung dengan Juragan Suplai!',
+          message: completionMessage,
         }).catch(err => console.error('[Verify Photo] Failed to send WhatsApp:', err));
         
         return NextResponse.json({
@@ -317,21 +366,57 @@ Return ONLY valid JSON (no markdown): { "face_visible": boolean, "face_clear": b
         if (verified) {
           // Update user in database
           const supabase = createAdminClient();
-          const userData = await (supabase
+          
+          // Get full user data including role
+          const { data: userData, error: selectError } = await (supabase
             .from('users') as any)
-            .select('onboarding_data')
+            .select('onboarding_data, role')
             .eq('phone', phone)
             .single();
 
-          const onboardingData = userData.data?.onboarding_data || {};
+          if (selectError) {
+            console.error('[Verify Photo] Failed to get user data:', selectError);
+          }
+
+          const onboardingData = userData?.onboarding_data || {};
+          const userRole = userData?.role;
+          
           onboardingData.selfieVerified = true;
+          
+          console.log('[Verify Photo] User role:', userRole);
+          console.log('[Verify Photo] Onboarding data:', JSON.stringify(onboardingData));
+          console.log('[Verify Photo] Categories from onboardingData:', onboardingData.categories);
+
+          // Prepare update data
+          const updateData: any = {
+            phone,
+            onboarding_step: mapStepToDatabase('completed'),
+            is_verified: true,
+            onboarding_data: onboardingData,
+            name: onboardingData.name,
+            address: onboardingData.address,
+          };
+          
+          // Add supplier-specific fields
+          if (userRole === 'supplier') {
+            if (onboardingData.categories && onboardingData.categories.length > 0) {
+              updateData.categories = onboardingData.categories;
+              console.log('[Verify Photo] Setting categories for supplier:', onboardingData.categories);
+            } else {
+              console.warn('[Verify Photo] WARNING: Categories empty for supplier!');
+            }
+            if (onboardingData.businessName) {
+              updateData.business_name = onboardingData.businessName;
+            }
+          }
+          
+          // Add courier-specific fields
+          if (userRole === 'courier' && onboardingData.vehicle) {
+            updateData.vehicle = onboardingData.vehicle;
+          }
 
           const { error: upsertError } = await (supabase.from('users') as any).upsert(
-            {
-              phone,
-              onboarding_data: onboardingData,
-              onboarding_step: mapStepToDatabase('completed'),
-            },
+            updateData,
             { onConflict: 'phone' }
           );
           
@@ -350,10 +435,22 @@ Return ONLY valid JSON (no markdown): { "face_visible": boolean, "face_clear": b
           
           console.log(`[Verify Photo] Verification fetch (Selfie success) - data:`, verifyData, 'error:', verifyError);
           
+          // Send role-specific completion message
+          let completionMessage = '';
+          if (userRole === 'supplier') {
+            const categoryNames = getCategoryNames(onboardingData.categories || []);
+            completionMessage = `✅ *Pendaftaran Supplier Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Toko: *${onboardingData.businessName}*\n• Kategori: *${categoryNames}*\n\n🎉 Profil Anda sudah aktif dan terverifikasi!\n\nAnda siap menerima pesanan dari pembeli. Tunggu broadcast order di WhatsApp Anda.`;
+          } else if (userRole === 'courier') {
+            const vehicleEmoji = onboardingData.vehicle === 'motor' ? '🏍️' : onboardingData.vehicle === 'mobil' ? '🚙' : '🚗🏍️';
+            completionMessage = `✅ *Pendaftaran Kurir Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Kendaraan: *${vehicleEmoji} ${onboardingData.vehicle?.toUpperCase()}*\n\n🎉 Profil Anda sudah aktif dan terverifikasi!\n\nAnda siap menerima penawaran antar barang. Tunggu pesan dari sistem.`;
+          } else {
+            completionMessage = '✅ Selfie Anda berhasil diverifikasi!\n\n🎉 *Pendaftaran Selesai!*\n\nAkun Anda sudah terdaftar dan terverifikasi.\n\nTerima kasih telah bergabung dengan Juragan Suplai!';
+          }
+          
           // Send WhatsApp notification
           await sendWhatsApp({
             phone,
-            message: '✅ Selfie Anda berhasil diverifikasi!\n\n🎉 *Pendaftaran Selesai!*\n\nAkun Anda sudah terdaftar dan sedang menunggu persetujuan dari admin.\n\nTerima kasih telah bergabung dengan Juragan Suplai!',
+            message: completionMessage,
           }).catch(err => console.error('[Verify Photo] Failed to send WhatsApp:', err));
         }
 

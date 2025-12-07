@@ -112,12 +112,17 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   // 🔴 FILTER: Ignore "non-text message" placeholder from Fonnte
   // This happens when user sends image/sticker/location without text
   if (message === 'non-text message' || message === 'non-button message') {
-    // Check if there's a URL (image) to process
+    // Check if there's a URL (image) or location (GPS) to process
     if (payload.url) {
       console.log(`[Webhook] Non-text message with image URL: ${payload.url}`);
       // Let it continue to image handling below
+    } else if (payload.location && (typeof payload.location === 'string' ? payload.location.length > 0 : true)) {
+      console.log(`[Webhook] Non-text message with GPS location: ${JSON.stringify(payload.location)}`);
+      // Set message to something descriptive for location
+      message = 'Location shared via GPS';
+      // Let it continue to process location in onboarding flow
     } else {
-      console.log(`[Webhook] ✓ Ignoring non-text message without URL from ${phone}`);
+      console.log(`[Webhook] ✓ Ignoring non-text message without URL or location from ${phone}`);
       return 'Ignored non-text message';
     }
   }
@@ -140,8 +145,10 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   const onboardingStep = userData?.onboarding_step || null;
   const userRole = userData?.role || null;
   const onboardingData = userData?.onboarding_data || {};
+  const currentStep = onboardingData.currentStep || onboardingStep; // Prioritize currentStep from onboarding_data
 
-  console.log(`[Webhook] User: ${phone} | Step: ${onboardingStep} | Role: ${userRole} | Message: "${message.substring(0, 30)}"`);
+  console.log(`[Webhook] User: ${phone} | DB Step: ${onboardingStep} | Current Step: ${currentStep} | Role: ${userRole} | Message: "${message.substring(0, 30)}"`);
+  console.log(`[Webhook] Full onboarding data:`, JSON.stringify(onboardingData, null, 2));
 
   // NEW FLOW: User ini baru pertama kali atau ingin daftar
   if (message.toLowerCase().includes('daftar') && !userRole) {
@@ -151,11 +158,11 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   }
 
   // ONBOARDING STATE MACHINE
-  if (onboardingStep && onboardingStep !== 'completed') {
-    console.log(`[Onboarding] Processing step: ${onboardingStep}, Role: ${userRole}`);
+  if (currentStep && currentStep !== 'completed') {
+    console.log(`[Onboarding] Processing step: ${currentStep} (DB: ${onboardingStep}), Role: ${userRole}`);
 
     // Handle role selection
-    if (onboardingStep === 'role_selection') {
+    if (currentStep === 'role_selection') {
       console.log(`[Onboarding] Handling role selection`);
       const success = await handleRoleSelection(phone, message);
       return success ? 'Role selected' : 'Invalid role input';
@@ -163,37 +170,58 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
 
     // Handle supplier flow
     if (userRole === 'supplier') {
-      if (onboardingStep === 'name_input') {
+      if (currentStep === 'name_input') {
         console.log(`[Supplier] Step: name_input`);
         const success = await handleSupplierName(phone, message);
         return success ? 'Name saved' : 'Invalid name';
       }
 
-      if (onboardingStep === 'business_name_input') {
+      if (currentStep === 'business_name_input') {
         console.log(`[Supplier] Step: business_name_input`);
         const success = await handleSupplierBusinessName(phone, message);
         return success ? 'Business name saved' : 'Invalid business name';
       }
 
-      // supplier_location maps to location_share in DB
-      if (onboardingStep === 'location_share') {
-        console.log(`[Supplier] Step: supplier_location (mapped to location_share)`);
-        // Parse location if user shared GPS coordinates
+      // location_share can mean TWO things for supplier:
+      // 1. business_name_input (if business_name is NULL) 
+      // 2. supplier_location (if business_name is filled)
+      if (currentStep === 'supplier_location' || (currentStep === 'location_share' && onboardingStep === 'location_share')) {
+        console.log(`[Supplier] Step: supplier_location (currentStep: ${currentStep}, DB: ${onboardingStep})`);
+        
+        // If currentStep not available, fallback to business_name check
+        if (!currentStep || currentStep === 'location_share') {
+          const { data: checkUser } = await (supabase.from('users') as any)
+            .select('business_name')
+            .eq('phone', phone)
+            .single();
+          
+          const hasBusinessName = checkUser?.business_name && checkUser.business_name.length > 0;
+          console.log(`[Supplier] business_name check: ${hasBusinessName ? 'EXISTS' : 'NULL'} → ${hasBusinessName ? 'LOCATION' : 'BUSINESS_NAME'} step`);
+          
+          if (!hasBusinessName) {
+            console.log(`[Supplier] Executing: handleSupplierBusinessName`);
+            const success = await handleSupplierBusinessName(phone, message);
+            return success ? 'Business name saved' : 'Invalid business name';
+          }
+        }
+        
+        // Proceed with location
+        console.log(`[Supplier] Executing: handleSupplierLocation`);
         const parsedLocation = parseLocation(payload.location);
         const success = await handleSupplierLocation(phone, message, parsedLocation || undefined);
         return success ? 'Location saved' : 'Invalid location';
       }
 
-      if (onboardingStep === 'categories_select' || onboardingStep === 'details_input') {
-        console.log(`[Supplier] Step: categories_select (or legacy details_input)`);
-        // details_input is legacy step, treat as categories_select
+      // categories_select is the logical step, but maps to 'details_input' in DB
+      if (currentStep === 'categories_select' || (currentStep === 'details_input' && onboardingStep === 'details_input')) {
+        console.log(`[Supplier] Step: categories_select (currentStep: ${currentStep}, DB: ${onboardingStep})`);
         const success = await handleSupplierCategories(phone, message);
         return success ? 'Categories selected' : 'Invalid categories';
       }
 
-      if (onboardingStep === 'awaiting_ktp' || onboardingStep === 'awaiting_selfie' || onboardingStep === 'verification') {
-        console.log(`[Supplier] Step: photo upload (${onboardingStep})`);
-        // verification is legacy step for photos
+      // awaiting_ktp and awaiting_selfie map to 'verification' in DB
+      if (currentStep === 'awaiting_ktp' || currentStep === 'awaiting_selfie' || currentStep === 'verification' || onboardingStep === 'verification') {
+        console.log(`[Supplier] Step: photo upload (currentStep: ${currentStep}, DB: ${onboardingStep})`);
         
         // Check if Fonnte sends image URL (requires All Feature Package)
         if (payload.url) {
@@ -216,12 +244,12 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
 
     // Handle courier flow
     if (userRole === 'courier') {
-      if (onboardingStep === 'name_input') {
+      if (currentStep === 'name_input') {
         const success = await handleCourierName(phone, message);
         return success ? 'Name saved' : 'Invalid name';
       }
 
-      if (onboardingStep === 'location_share') {
+      if (currentStep === 'location_share') {
         console.log(`[Courier] Step: location_share`);
         // Parse location if user shared GPS coordinates
         const parsedLocation = parseLocation(payload.location);
@@ -229,14 +257,14 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
         return success ? 'Location saved' : 'Invalid location';
       }
 
-      if (onboardingStep === 'details_input') {
+      if (currentStep === 'details_input') {
         const success = await handleCourierVehicle(phone, message);
         return success ? 'Vehicle selected' : 'Invalid vehicle';
       }
 
       // Photo verification for courier
-      if (onboardingStep === 'verification') {
-        console.log(`[Courier] Step: photo upload (verification)`);
+      if (currentStep === 'verification' || onboardingStep === 'verification') {
+        console.log(`[Courier] Step: photo upload (currentStep: ${currentStep}, DB: ${onboardingStep})`);
         
         // Check if Fonnte sends image URL (requires All Feature Package)
         if (payload.url) {
@@ -1693,23 +1721,29 @@ export async function POST(request: NextRequest) {
       console.log(`[${requestId}] Non-empty fields:`, allFields.join(', '));
     }
     
-    const hasValidLocation = payload.location && 
-      typeof payload.location === 'object' && 
-      'latitude' in payload.location && 
-      'longitude' in payload.location;
+    // Check both object format and string format for location
+    const hasValidLocation = payload.location && (
+      (typeof payload.location === 'object' && 'latitude' in payload.location && 'longitude' in payload.location) ||
+      (typeof payload.location === 'string' && payload.location.includes(','))
+    );
     
     if (hasValidLocation && payload.sender) {
       console.log(`[${requestId}] ✓ Location detected from ${payload.sender}`);
-      const result = await handleLocationUpdate(
-        formatPhoneNumber(payload.sender),
-        payload.location as { latitude: number; longitude: number }
-      );
-      return NextResponse.json({
-        success: true,
-        type: 'location',
-        message: result.substring(0, 100),
-        requestId,
-      });
+      
+      // Parse location to standard format
+      const parsedLocation = parseLocation(payload.location);
+      if (parsedLocation) {
+        const result = await handleLocationUpdate(
+          formatPhoneNumber(payload.sender),
+          parsedLocation
+        );
+        return NextResponse.json({
+          success: true,
+          type: 'location',
+          message: result.substring(0, 100),
+          requestId,
+        });
+      }
     }
     
     // Debug: Log if location field exists but doesn't match format

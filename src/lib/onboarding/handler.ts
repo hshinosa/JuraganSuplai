@@ -22,6 +22,7 @@ export type OnboardingState =
 
 interface OnboardingData {
   role?: 'supplier' | 'courier';
+  currentStep?: string; // Track the actual logical step (not database mapped value)
   // Shared
   name?: string;
   address?: string;
@@ -109,14 +110,30 @@ export async function handleRoleSelection(phone: string, input: string): Promise
 /**
  * Map new step names to database-compatible values
  * Database ENUM may not have all new values yet, so we map to compatible old values
+ * 
+ * SUPPLIER FLOW (logical → database):
+ * - business_name_input → location_share
+ * - supplier_location → location_share  
+ * - categories_select → details_input
+ * - awaiting_ktp → verification
+ * - awaiting_selfie → verification
+ * 
+ * COURIER FLOW (uses DB names directly):
+ * - name_input → location_share
+ * - location_share → location_share (no mapping)
+ * - details_input → details_input (vehicle selection)
+ * - verification → verification (photo)
+ * 
+ * ⚠️ IMPORTANT: Webhook must check BOTH logical name AND database name
+ * Example: if (step === 'supplier_location' || step === 'location_share')
  */
 export function mapStepToDatabase(newStep: string): string {
   const stepMap: Record<string, string> = {
-    'business_name_input': 'location_share', // Old step name that exists in DB
-    'supplier_location': 'location_share',   // Map to existing location_share step
-    'categories_select': 'details_input',     // Old step name that exists in DB
-    'awaiting_ktp': 'verification',           // Old step name that exists in DB
-    'awaiting_selfie': 'verification',        // Old step name that exists in DB
+    'business_name_input': 'location_share', // Supplier: after name, before location
+    'supplier_location': 'location_share',   // Supplier: location input step
+    'categories_select': 'details_input',     // Supplier: category selection
+    'awaiting_ktp': 'verification',           // Photo: KTP verification
+    'awaiting_selfie': 'verification',        // Photo: Selfie verification
     'completed': 'completed',                 // Final step
   };
   
@@ -160,6 +177,7 @@ export async function handleSupplierName(phone: string, input: string): Promise<
     
     const onboardingData = (userData?.onboarding_data || {}) as OnboardingData;
     onboardingData.name = name;
+    onboardingData.currentStep = 'business_name_input'; // Track logical step
     
     // Use database-compatible step name
     const dbStep = mapStepToDatabase('business_name_input');
@@ -241,6 +259,7 @@ export async function handleSupplierBusinessName(phone: string, input: string): 
     
     const onboardingData = (userData?.onboarding_data || {}) as OnboardingData;
     onboardingData.businessName = businessName;
+    onboardingData.currentStep = 'supplier_location'; // Next step is location
     
     const dbStep = mapStepToDatabase('supplier_location');
     console.log(`[handleSupplierBusinessName] Updating database - business_name: "${businessName}", step: "${dbStep}"`);
@@ -317,6 +336,7 @@ export async function handleSupplierLocation(
     // Store address text
     const address = input.trim() || 'Location shared via GPS';
     onboardingData.address = address;
+    onboardingData.currentStep = 'categories_select'; // Next step after location
     
     // Prepare location data for PostGIS if coordinates provided
     let locationPoint = null;
@@ -385,6 +405,9 @@ export async function handleSupplierLocation(
 export async function handleSupplierCategories(phone: string, input: string): Promise<boolean> {
   const selectedCategories = parseSelectedCategories(input);
   
+  console.log('[handleSupplierCategories] Input:', input);
+  console.log('[handleSupplierCategories] Parsed categories:', selectedCategories);
+  
   if (selectedCategories.length === 0) {
     await sendWhatsApp({ 
       phone, 
@@ -404,6 +427,8 @@ export async function handleSupplierCategories(phone: string, input: string): Pr
   onboardingData.categories = selectedCategories;
   onboardingData.ktpVerified = false;
   onboardingData.selfieVerified = false;
+  
+  console.log('[handleSupplierCategories] Updated onboarding data:', JSON.stringify(onboardingData));
   
   // Use database-compatible step name
   const dbStep = mapStepToDatabase('awaiting_ktp');
@@ -579,6 +604,11 @@ export async function handlePhotoUpload(
       
       const userRole = userRoleData?.role;
       
+      // Log untuk debugging
+      console.log('[handlePhotoUpload] User role:', userRole);
+      console.log('[handlePhotoUpload] Onboarding data:', JSON.stringify(onboardingData));
+      console.log('[handlePhotoUpload] Categories from onboardingData:', onboardingData.categories);
+      
       // Prepare update data - add categories for supplier
       const updateData: any = {
         phone,
@@ -590,9 +620,16 @@ export async function handlePhotoUpload(
       };
       
       // Add supplier-specific fields
-      if (userRole === 'supplier' && onboardingData.categories) {
-        updateData.categories = onboardingData.categories;
-        updateData.business_name = onboardingData.businessName;
+      if (userRole === 'supplier') {
+        if (onboardingData.categories && onboardingData.categories.length > 0) {
+          updateData.categories = onboardingData.categories;
+          console.log('[handlePhotoUpload] Setting categories:', onboardingData.categories);
+        } else {
+          console.warn('[handlePhotoUpload] WARNING: Categories empty for supplier!');
+        }
+        if (onboardingData.businessName) {
+          updateData.business_name = onboardingData.businessName;
+        }
       }
       
       // Add courier-specific fields
