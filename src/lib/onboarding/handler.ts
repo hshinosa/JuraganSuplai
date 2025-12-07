@@ -99,7 +99,7 @@ export async function handleRoleSelection(phone: string, input: string): Promise
   } else {
     await sendWhatsApp({ 
       phone, 
-      message: '✅ Anda terdaftar sebagai *KURIR*\n\n📝 *Step 1/3: Nama Lengkap*\n\nBalas dengan nama lengkap Anda:\n\nContoh: "Budi Santoso"' 
+      message: '✅ Anda terdaftar sebagai *KURIR*\n\n📝 *Step 1/4: Nama Lengkap*\n\nBalas dengan nama lengkap Anda:\n\nContoh: "Budi Santoso"' 
     });
   }
   
@@ -571,21 +571,49 @@ export async function handlePhotoUpload(
         timestamp: new Date().toISOString(),
       };
 
-      const categoryNames = getCategoryNames(onboardingData.categories || []);
+      // Get user role to send appropriate completion message
+      const { data: userRoleData } = await (supabase.from('users') as any)
+        .select('role')
+        .eq('phone', phone)
+        .single();
+      
+      const userRole = userRoleData?.role;
+      
+      // Prepare update data - add categories for supplier
+      const updateData: any = {
+        phone,
+        onboarding_step: 'completed',
+        is_verified: true, // Auto-verify immediately after successful photo
+        onboarding_data: onboardingData,
+        name: onboardingData.name,
+        address: onboardingData.address,
+      };
+      
+      // Add supplier-specific fields
+      if (userRole === 'supplier' && onboardingData.categories) {
+        updateData.categories = onboardingData.categories;
+        updateData.business_name = onboardingData.businessName;
+      }
+      
+      // Add courier-specific fields
+      if (userRole === 'courier' && onboardingData.vehicle) {
+        updateData.vehicle = onboardingData.vehicle;
+      }
       
       await (supabase.from('users') as any)
-        .upsert(
-          {
-            phone,
-            onboarding_step: 'completed',
-            is_verified: true, // Auto-verify immediately after successful photo
-            onboarding_data: onboardingData,
-          },
-          { onConflict: 'phone' }
-        )
+        .upsert(updateData, { onConflict: 'phone' })
         .select();
 
-      const completionMessage = `✅ *Pendaftaran Supplier Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Toko: *${onboardingData.businessName}*\n• Kategori: *${categoryNames}*\n\n🎉 Profil Anda sudah aktif dan terverifikasi!\n\nAnda siap menerima pesanan dari pembeli. Tunggu broadcast order di WhatsApp Anda.`;
+      // Send different completion message based on role
+      let completionMessage = '';
+      
+      if (userRole === 'supplier') {
+        const categoryNames = getCategoryNames(onboardingData.categories || []);
+        completionMessage = `✅ *Pendaftaran Supplier Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Toko: *${onboardingData.businessName}*\n• Kategori: *${categoryNames}*\n\n🎉 Profil Anda sudah aktif dan terverifikasi!\n\nAnda siap menerima pesanan dari pembeli. Tunggu broadcast order di WhatsApp Anda.`;
+      } else if (userRole === 'courier') {
+        const vehicleEmoji = onboardingData.vehicle === 'motor' ? '🏍️' : onboardingData.vehicle === 'mobil' ? '🚙' : '🚗🏍️';
+        completionMessage = `✅ *Pendaftaran Kurir Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Kendaraan: *${vehicleEmoji} ${onboardingData.vehicle?.toUpperCase()}*\n\n🎉 Profil Anda sudah aktif dan terverifikasi!\n\nAnda siap menerima penawaran antar barang. Tunggu pesan dari sistem.`;
+      }
       
       await sendWhatsApp({ phone, message: completionMessage });
 
@@ -645,54 +673,100 @@ export async function handleCourierName(phone: string, input: string): Promise<b
   
   await sendWhatsApp({ 
     phone, 
-    message: `✅ Nama: *${name}*\n\n📍 *Step 2/3: Alamat*\n\nBalas dengan alamat domisili Anda:\n\nContoh: "Jl. Ahmad Yani No.45, Surabaya, Jawa Timur"` 
+    message: `✅ Nama: *${name}*\n\n📍 *Step 2/4: Lokasi Domisili*\n\nKirimkan lokasi Anda dengan salah satu cara:\n\n1️⃣ *Share Location* - Klik 📎 → Location → Share current location\n\n2️⃣ *Ketik Alamat* - Tulis alamat lengkap Anda\n\nContoh: "Jl. Ahmad Yani No.45, Surabaya"` 
   });
   
   return true;
 }
 
 /**
- * Handle courier address input
+ * Handle courier address/location input (text address or GPS coordinates)
  */
-export async function handleCourierAddress(phone: string, input: string): Promise<boolean> {
-  const address = input.trim();
+export async function handleCourierAddress(
+  phone: string, 
+  input: string,
+  coordinates?: { latitude: number; longitude: number }
+): Promise<boolean> {
+  console.log(`[handleCourierAddress] Start - Phone: ${phone}, Input: "${input}", Coords:`, coordinates);
   
-  if (address.length < 5 || address.length > 255) {
+  try {
+    const supabase = createAdminClient();
+    
+    const { data: userData, error: selectError } = await (supabase.from('users') as any)
+      .select('onboarding_data')
+      .eq('phone', phone)
+      .single();
+    
+    if (selectError) {
+      console.error(`[handleCourierAddress] Select error:`, selectError);
+      await sendWhatsApp({ 
+        phone, 
+        message: '❌ Gagal mengambil data. Coba lagi.' 
+      });
+      return false;
+    }
+    
+    const onboardingData = (userData?.onboarding_data || {}) as OnboardingData;
+    
+    // Store address text
+    const address = input.trim() || 'Location shared via GPS';
+    onboardingData.address = address;
+    
+    // Prepare location data for PostGIS if coordinates provided
+    let locationPoint = null;
+    if (coordinates) {
+      // PostGIS format: POINT(longitude latitude)
+      locationPoint = `POINT(${coordinates.longitude} ${coordinates.latitude})`;
+      console.log(`[handleCourierAddress] PostGIS point: ${locationPoint}`);
+    }
+    
+    const updateData: Record<string, unknown> = {
+      phone,
+      address,
+      onboarding_step: 'details_input',
+      onboarding_data: onboardingData,
+    };
+    
+    // Add location if coordinates available
+    if (locationPoint) {
+      updateData.location = locationPoint;
+    }
+    
+    const { error: upsertError, data } = await (supabase.from('users') as any)
+      .upsert(updateData, { onConflict: 'phone' })
+      .select();
+    
+    if (upsertError) {
+      console.error(`[handleCourierAddress] Upsert error:`, upsertError);
+      await sendWhatsApp({ 
+        phone, 
+        message: '❌ Gagal menyimpan lokasi. Coba lagi.' 
+      });
+      return false;
+    }
+    
+    console.log(`[handleCourierAddress] Database updated successfully:`, data);
+    
+    // Confirmation message
+    const locationConfirmation = coordinates 
+      ? `📍 Lokasi GPS tersimpan!` 
+      : `📍 Alamat: *${address}*`;
+    
     await sendWhatsApp({ 
       phone, 
-      message: '❌ Alamat harus 5-255 karakter. Coba lagi:' 
+      message: `✅ ${locationConfirmation}\n\n🚗 *Step 3/4: Kendaraan*\n\nKendaraan apa yang Anda miliki?\n\n1. 🏍️ *MOTOR*\n2. 🚙 *MOBIL*\n3. 🚗 *KEDUANYA*\n\nBalas dengan: motor, mobil, atau keduanya` 
+    });
+    
+    console.log(`[handleCourierAddress] Message sent successfully`);
+    return true;
+  } catch (error) {
+    console.error(`[handleCourierAddress] Exception:`, error);
+    await sendWhatsApp({ 
+      phone, 
+      message: '❌ Terjadi kesalahan. Coba lagi.' 
     });
     return false;
   }
-  
-  const supabase = createAdminClient();
-  
-  const { data: userData } = await (supabase.from('users') as any)
-    .select('onboarding_data')
-    .eq('phone', phone)
-    .single();
-  
-  const onboardingData = (userData?.onboarding_data || {}) as OnboardingData;
-  onboardingData.address = address;
-  
-  await (supabase.from('users') as any)
-    .upsert(
-      {
-        phone,
-        address,
-        onboarding_step: 'details_input',
-        onboarding_data: onboardingData,
-      },
-      { onConflict: 'phone' }
-    )
-    .select();
-  
-  await sendWhatsApp({ 
-    phone, 
-    message: `✅ Alamat: *${address}*\n\n🚗 *Step 3/3: Kendaraan*\n\nKendaraan apa yang Anda miliki?\n\n1. 🏍️ *MOTOR*\n2. 🚙 *MOBIL*\n3. 🚗 *KEDUANYA*\n\nBalas dengan: motor, mobil, atau keduanya` 
-  });
-  
-  return true;
 }
 
 /**
@@ -724,18 +798,23 @@ export async function handleCourierVehicle(phone: string, input: string): Promis
       {
         phone,
         vehicle: vehicleInput === 'keduanya' ? 'pickup' : vehicleInput, // Map "keduanya" to pickup type
-        onboarding_step: 'completed',
-        is_verified: true, // Auto-verify for MVP
+        onboarding_step: 'verification', // Go to verification step
         onboarding_data: onboardingData,
       },
       { onConflict: 'phone' }
     )
     .select();
   
-  const vehicleEmoji = vehicleInput === 'motor' ? '🏍️' : vehicleInput === 'mobil' ? '🚙' : '🚗🏍️';
-  const completionMessage = `✅ *Pendaftaran Kurir Berhasil!*\n\n📋 *Summary:*\n• Nama: *${onboardingData.name}*\n• Alamat: *${onboardingData.address}*\n• Kendaraan: *${vehicleEmoji} ${vehicleInput.toUpperCase()}*\n\n🎉 Profil Anda sudah aktif!\n\nAnda siap menerima penawaran antar. Tunggu pesan dari sistem.`;
+  // Send verification link
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  const verificationUrl = `${baseUrl}/verify/${phone}`;
   
-  await sendWhatsApp({ phone, message: completionMessage });
+  const vehicleEmoji = vehicleInput === 'motor' ? '🏍️' : vehicleInput === 'mobil' ? '🚙' : '🚗🏍️';
+  
+  await sendWhatsApp({ 
+    phone, 
+    message: `✅ Kendaraan: *${vehicleEmoji} ${vehicleInput.toUpperCase()}*\n\n📸 *Step 4/4: Verifikasi Foto*\n\nKlik link di bawah untuk upload foto KTP dan Selfie:\n\n👉 ${verificationUrl}\n\nFoto akan diverifikasi otomatis oleh AI.` 
+  });
   
   return true;
 }

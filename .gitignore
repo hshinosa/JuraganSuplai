@@ -43,3 +43,5 @@ next-env.d.ts
 docs
 .github
 ngrok.exe
+
+/supabase/.temp

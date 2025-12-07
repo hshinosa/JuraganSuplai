@@ -92,6 +92,13 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
     throw new Error('Message handler requires sender and message');
   }
   
+  // 🔴 FILTER: Only process messages to our device
+  const OUR_DEVICE = process.env.FONNTE_DEVICE || '081931361437';
+  if (payload.device !== OUR_DEVICE) {
+    console.log(`[Webhook] ✓ Ignoring message to different device: ${payload.device}`);
+    return 'Ignored - different device';
+  }
+  
   const phone = formatPhoneNumber(payload.sender);
   let message = payload.message;
   
@@ -215,13 +222,38 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
       }
 
       if (onboardingStep === 'location_share') {
-        const success = await handleCourierAddress(phone, message);
-        return success ? 'Address saved' : 'Invalid address';
+        console.log(`[Courier] Step: location_share`);
+        // Parse location if user shared GPS coordinates
+        const parsedLocation = parseLocation(payload.location);
+        const success = await handleCourierAddress(phone, message, parsedLocation || undefined);
+        return success ? 'Location saved' : 'Invalid location';
       }
 
       if (onboardingStep === 'details_input') {
         const success = await handleCourierVehicle(phone, message);
         return success ? 'Vehicle selected' : 'Invalid vehicle';
+      }
+
+      // Photo verification for courier
+      if (onboardingStep === 'verification') {
+        console.log(`[Courier] Step: photo upload (verification)`);
+        
+        // Check if Fonnte sends image URL (requires All Feature Package)
+        if (payload.url) {
+          console.log(`[Onboarding] Photo upload detected: ${payload.url}`);
+          const success = await handlePhotoUpload(phone, payload.url);
+          return success ? 'Photo verified' : 'Photo verification failed';
+        } else {
+          // No URL available - redirect to web verification
+          const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+          const verificationUrl = `${baseUrl}/verify/${phone}`;
+          
+          await sendWhatsApp({
+            phone,
+            message: `📸 *Verifikasi Foto KTP & Selfie*\n\nUntuk verifikasi, silakan klik link berikut:\n\n👉 ${verificationUrl}\n\nUpload foto KTP dan selfie melalui browser untuk melanjutkan pendaftaran.`,
+          });
+          return 'Redirected to web verification';
+        }
       }
     }
   }
@@ -248,9 +280,9 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
     }
   }
   
-  // Check for BANTUAN (HELP) command
+  // Check for BANTUAN (HELP) command - for users not in system yet
   if (message.toUpperCase() === 'BANTUAN' || message.toUpperCase() === 'HELP') {
-    const helpMessage = `📖 *DAFTAR PERINTAH JURAGAN SUPLAI*\n\n1️⃣ *DAFTAR Registrasi*\nKetik DAFTAR untuk memulai pendaftaran\n\n2️⃣ *LOKASI Kirim Lokasi*\n\`LOKASI#latitude#longitude\`\nContoh: \`LOKASI#-6.2088#106.8456\`\n\n3️⃣ *BANTUAN Bantuan*\nKetik BANTUAN untuk tampilkan pesan ini\n\n📞 Butuh bantuan lebih lanjut?\nHubungi admin: +6285294131193`;
+    const helpMessage = `📚 *Bantuan JuraganSuplai.ai*\n━━━━━━━━━━━━━━━\n\n🆕 *Belum terdaftar?*\nKetik: *DAFTAR*\n\n📞 *Butuh bantuan?*\nHubungi: 0812-xxxx-xxxx\n\n━━━━━━━━━━━━━━━\nJuraganSuplai.ai - Platform B2B Logistics`;
     await sendWhatsApp({ phone, message: helpMessage });
     return helpMessage;
   }
@@ -374,6 +406,19 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
       }
     }
     
+    // ========================
+    // BUYER COMMANDS
+    // ========================
+    if (userRole === 'buyer') {
+      // BANTUAN - Show help for buyer
+      if (normalizedMessage === 'BANTUAN' || normalizedMessage === 'HELP' || normalizedMessage === '?') {
+        return await handleBuyerHelp(phone);
+      }
+      
+      // Buyers can also check their order status via AI
+      // Other commands will be handled by AI agent below
+    }
+    
     // If no command matched, use AI agent for natural conversation
     console.log(`[Webhook] No command matched, passing to AI agent...`);
     const agentResult = await runAgent(message, [], { phone, userId: userData?.id });
@@ -382,6 +427,18 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
       await sendWhatsApp({ phone, message: `✅ ${agentResult.response}` });
       return agentResult.response;
     }
+  }
+  
+  // If user is in onboarding (not completed), ignore non-onboarding messages
+  if (onboardingStep && onboardingStep !== 'completed') {
+    console.log(`[Webhook] User in onboarding step: ${onboardingStep}. Ignoring non-onboarding message.`);
+    return 'User in onboarding - message ignored';
+  }
+  
+  // If user not registered and message doesn't contain "daftar", ignore
+  if (!userRole) {
+    console.log(`[Webhook] Unregistered user sent message without DAFTAR keyword. Ignoring.`);
+    return 'Unregistered user - message ignored';
   }
   
   // Default: log message
@@ -1282,7 +1339,7 @@ async function handleSupplierHistory(phone: string): Promise<string> {
  * Handle supplier help (BANTUAN)
  */
 async function handleSupplierHelp(phone: string): Promise<string> {
-  const helpMessage = `📚 *Bantuan Supplier*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat pesanan aktif\n📜 *RIWAYAT* - Riwayat pesanan\n💰 *SALDO* - Cek saldo\n\n📨 *Respons Order:*\n✅ *SANGGUP KIRIM* - Terima & antar sendiri\n✅ *SANGGUP AMBIL* - Terima, butuh kurir\n❌ *TIDAK* - Tolak pesanan\n🚫 *BATAL* - Batalkan order aktif\n\n🚚 *Antar Sendiri:*\n📤 *KIRIM* - Mulai pengantaran\n✅ *SELESAI* - Barang sudah sampai\n\n━━━━━━━━━━━━━━━\n❓ Butuh bantuan lain?\nHubungi admin: 0812-xxxx-xxxx`;
+  const helpMessage = `📚 *Bantuan Supplier*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat pesanan aktif\n📜 *RIWAYAT* - Riwayat pesanan\n💰 *SALDO* - Cek saldo\n❓ *BANTUAN* - Tampilkan bantuan\n\n📨 *Respons Order:*\n✅ *SANGGUP KIRIM* - Terima & antar sendiri\n✅ *SANGGUP AMBIL* - Terima, butuh kurir\n❌ *TIDAK* - Tolak pesanan\n🚫 *BATAL* - Batalkan order aktif\n\n🚚 *Antar Sendiri:*\n📤 *KIRIM* - Mulai pengantaran\n✅ *SELESAI* - Barang sudah sampai\n\n━━━━━━━━━━━━━━━\nJuraganSuplai.ai`;
   
   await sendWhatsApp({ phone, message: `✅ ${helpMessage}` });
   return 'Supplier help sent';
@@ -1489,10 +1546,23 @@ async function handleCourierHistory(phone: string): Promise<string> {
  * Handle courier help (BANTUAN)
  */
 async function handleCourierHelp(phone: string): Promise<string> {
-  const helpMessage = `📚 *Bantuan Kurir*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat job aktif\n📜 *RIWAYAT* - Riwayat pengantaran\n💰 *SALDO* - Cek saldo\n\n📨 *Respons Job:*\n✅ *AMBIL* - Terima job\n✅ *SELESAI* - Tandai selesai antar\n🚫 *BATAL* - Batalkan job\n\n━━━━━━━━━━━━━━━\n❓ Butuh bantuan lain?\nHubungi admin: 0812-xxxx-xxxx`;
+  const helpMessage = `📚 *Bantuan Kurir*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat job aktif\n📜 *RIWAYAT* - Riwayat pengantaran\n💰 *SALDO* - Cek saldo\n❓ *BANTUAN* - Tampilkan bantuan\n\n📨 *Respons Job:*\n✅ *AMBIL* - Terima job\n✅ *SELESAI* - Tandai selesai antar\n🚫 *BATAL* - Batalkan job\n\n━━━━━━━━━━━━━━━\nJuraganSuplai.ai`;
   
   await sendWhatsApp({ phone, message: `✅ ${helpMessage}` });
   return 'Courier help sent';
+}
+
+/**
+ * Handle buyer help (BANTUAN)
+ */
+async function handleBuyerHelp(phone: string): Promise<string> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  const dashboardUrl = `${baseUrl}/dashboard/buyer`;
+  
+  const helpMessage = `📚 *Bantuan Buyer*\n━━━━━━━━━━━━━━━\n\n🛒 *Cara Order:*\n\n1️⃣ Buka Dashboard:\n${dashboardUrl}\n\n2️⃣ Klik "Buat Pesanan Baru"\n\n3️⃣ Isi detail pesanan:\n   • Nama produk\n   • Jumlah & satuan\n   • Alamat pengiriman\n\n4️⃣ AI akan carikan supplier & kurir terdekat\n\n5️⃣ Bayar via link yang dikirim\n\n6️⃣ Lacak pesanan real-time\n\n━━━━━━━━━━━━━━━\n💡 *Tips:*\n• Cek status order di dashboard\n• Link tracking dikirim via WA\n• Konfirmasi terima di halaman tracking\n\n❓ *Pertanyaan?*\nChat langsung di sini, AI kami siap membantu!\n\n━━━━━━━━━━━━━━━\nJuraganSuplai.ai`;
+  
+  await sendWhatsApp({ phone, message: `✅ ${helpMessage}` });
+  return 'Buyer help sent';
 }
 
 // Helper functions for location extraction
