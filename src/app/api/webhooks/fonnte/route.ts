@@ -93,7 +93,7 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   }
   
   // 🔴 FILTER: Only process messages to our device
-  const OUR_DEVICE = process.env.FONNTE_DEVICE || '081931361437';
+  const OUR_DEVICE = process.env.FONNTE_DEVICE;
   if (payload.device !== OUR_DEVICE) {
     console.log(`[Webhook] ✓ Ignoring message to different device: ${payload.device}`);
     return 'Ignored - different device';

@@ -6,10 +6,8 @@
  */
 
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { CreateOrderForm } from '@/components/create-order-form';
 import { AgentLogConsole } from '@/components/agent-log-console';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -151,39 +149,16 @@ export default function BuyerDashboardPage() {
           <div className="lg:col-span-2 space-y-6">
             <BuyerStats counts={orderCounts} />
 
-            {/* Create Order Form - Shown when button clicked */}
-            <AnimatePresence>
-              {showCreateForm && (
-                <motion.div
-                  initial={{ opacity: 0, y: -20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <Card className="bg-white border-2 border-emerald-200">
-                    <CardHeader className="flex flex-row items-center justify-between">
-                      <CardTitle className="text-lg">Buat Pesanan Baru</CardTitle>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setShowCreateForm(false)}
-                      >
-                        Batal
-                      </Button>
-                    </CardHeader>
-                    <CardContent>
-                      <CreateOrderForm
-                        buyerId={DEMO_BUYER_ID}
-                        onSuccess={handleOrderSuccess}
-                      />
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {/* Create Order Modal */}
+            <CreateOrderForm
+              buyerId={DEMO_BUYER_ID}
+              open={showCreateForm}
+              onOpenChange={setShowCreateForm}
+              onSuccess={handleOrderSuccess}
+            />
 
             {/* Orders Tabs */}
-            <Tabs defaultValue="active" className="w-full">
+            <Tabs defaultValue="active" className="w-full">{" "}
               <TabsList className="grid w-full grid-cols-2 bg-slate-100">
                 <TabsTrigger value="active" className="flex items-center gap-2">
                   <Package className="w-4 h-4" />

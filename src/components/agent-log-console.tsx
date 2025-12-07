@@ -49,6 +49,9 @@ export function AgentLogConsole({
       
       if (orderId) {
         query.eq('order_id', orderId);
+      } else {
+        // Only show logs with order_id (from broadcast), not from WhatsApp testing
+        query.not('order_id', 'is', null);
       }
       
       const { data } = await query;
@@ -107,6 +110,12 @@ export function AgentLogConsole({
         },
         (payload) => {
           const log = payload.new as AgentLog;
+          
+          // Filter: only process logs with order_id (skip WhatsApp testing logs)
+          if (!orderId && !log.order_id) {
+            return;
+          }
+          
           const newEntries: AgentLogEntry[] = [];
           
           if (log.thought) {
