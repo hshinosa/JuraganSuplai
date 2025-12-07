@@ -22,6 +22,9 @@ interface RequestItemInput {
   deliveryAddress: string;
   deliveryLat: number;
   deliveryLng: number;
+  category?: string;
+  productNotes?: string;
+  deliveryNotes?: string;
 }
 
 interface RequestItemResult {
@@ -45,7 +48,7 @@ export async function actionRequestItem(
             await findSuppliers({
                 lat: input.deliveryLat,
                 lng: input.deliveryLng,
-                category: input.category || null,
+                category: input.category,
                 radiusKm: 10,
                 maxResults: 5,
             })
@@ -114,9 +117,6 @@ export async function actionRequestItem(
                 // Send WhatsApp
                 const message = templates.supplierOffer({
                     product_name: input.productName,
-                    category: input.category,
-                    product_notes: input.productNotes,
-                    delivery_notes: input.deliveryNotes,
                     quantity: input.quantity,
                     unit: input.unit,
                     weight_kg: input.estimatedWeight,
@@ -137,17 +137,12 @@ export async function actionRequestItem(
         await (supabase.from('agent_logs') as any).insert({
             order_id: order.id,
             iteration: 1,
-            thought: `Buyer requested ${input.productName}${
-                input.category ? ` [${input.category}]` : ''
-            }. Broadcasting to ${suppliersResult.found} suppliers.`,
+            thought: `Buyer requested ${input.productName}. Broadcasting to ${suppliersResult.found} suppliers.`,
             action: 'broadcastToSuppliers',
             action_input: {
                 suppliers: suppliersResult.suppliers.map(
                     (s: { id: string }) => s.id
                 ),
-                category: input.category,
-                productNotes: input.productNotes,
-                deliveryNotes: input.deliveryNotes,
             },
             observation: `Broadcasted to ${suppliersResult.found} suppliers`,
         });
@@ -167,67 +162,6 @@ export async function actionRequestItem(
             message: 'Terjadi kesalahan. Silakan coba lagi.',
         };
     }
-    
-    // 3. Broadcast to suppliers
-    const broadcastPromises = suppliersResult.suppliers.map(async (supplier: {
-      id: string;
-      name: string;
-      phone: string;
-      distance_km: number;
-      product: string;
-      price: number;
-    }) => {
-      // Record broadcast
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (supabase.from('order_broadcasts') as any).insert({
-        order_id: order.id,
-        supplier_id: supplier.id,
-      });
-      
-      // Send WhatsApp
-      const message = templates.supplierOffer({
-        product_name: input.productName,
-        quantity: input.quantity,
-        unit: input.unit,
-        weight_kg: input.estimatedWeight,
-        buyer_address: input.deliveryAddress,
-        distance_km: supplier.distance_km,
-        buyer_price: input.expectedPrice,
-        order_id: order.id,
-      });
-      
-      return sendWhatsApp({ phone: supplier.phone, message });
-    });
-    
-    await Promise.all(broadcastPromises);
-    
-    // 4. Log agent action
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (supabase.from('agent_logs') as any).insert({
-      order_id: order.id,
-      iteration: 1,
-      thought: `Buyer requested ${input.productName}. Broadcasting to ${suppliersResult.found} suppliers.`,
-      action: 'broadcastToSuppliers',
-      action_input: { suppliers: suppliersResult.suppliers.map((s: { id: string }) => s.id) },
-      observation: `Broadcasted to ${suppliersResult.found} suppliers`,
-    });
-    
-    revalidatePath('/dashboard/buyer');
-    
-    return {
-      success: true,
-      orderId: order.id,
-      suppliersContacted: suppliersResult.found,
-      message: `Pesanan dibuat! Menghubungi ${suppliersResult.found} supplier terdekat...`,
-    };
-    
-  } catch (error) {
-    console.error('[actionRequestItem] Error:', error);
-    return {
-      success: false,
-      message: 'Terjadi kesalahan. Silakan coba lagi.',
-    };
-  }
 }
 
 /**

@@ -1,5 +1,5 @@
 /**
- * Kolosal AI Agent Executor
+ * Groq AI Agent Executor
  * ReAct Pattern: Reasoning + Acting loop
  */
 
@@ -54,23 +54,23 @@ export function registerTool(name: string, implementation: ToolImplementation) {
 }
 
 /**
- * Call Kolosal AI API
+ * Call Groq AI API
+ * Using Groq's OpenAI-compatible chat completions endpoint
  */
-async function callKolosalAPI(messages: AgentMessage[]): Promise<AgentResponse> {
-  const apiUrl = process.env.KOLOSAL_API_URL!;
-  const apiKey = process.env.KOLOSAL_API_KEY!;
-  const workspaceId = process.env.KOLOSAL_WORKSPACE_ID!;
+async function callGroqAPI(messages: AgentMessage[]): Promise<AgentResponse> {
+  const apiKey = process.env.GROQ_API_KEY!;
+  const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
   
-  const response = await fetch(apiUrl, {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
-      'X-Workspace-ID': workspaceId,
     },
     body: JSON.stringify({
+      model,
       messages: messages.map(m => ({
-        role: m.role,
+        role: m.role === 'tool' ? 'user' : m.role, // Groq doesn't support tool role, use user
         content: m.content,
       })),
       temperature: 0.7,
@@ -80,11 +80,15 @@ async function callKolosalAPI(messages: AgentMessage[]): Promise<AgentResponse> 
   
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`Kolosal API error: ${response.status} - ${error}`);
+    throw new Error(`Groq API error: ${response.status} - ${error}`);
   }
   
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || data.output || data.content;
+  const content = data.choices?.[0]?.message?.content;
+  
+  if (!content) {
+    throw new Error('Groq API returned empty response');
+  }
   
   // Parse JSON response - handle markdown wrapping
   return parseAgentResponse(content);
@@ -184,10 +188,10 @@ export async function executeAgent(
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.log(`[Agent] Iteration ${iteration}/${MAX_ITERATIONS}`);
     
-    // Call Kolosal API
+    // Call Groq API
     let response: AgentResponse;
     try {
-      response = await callKolosalAPI(messages);
+      response = await callGroqAPI(messages);
     } catch (error) {
       console.error('[Agent] API call failed:', error);
       return {
@@ -259,7 +263,7 @@ export async function executeAgent(
 }
 
 /**
- * Mock Kolosal API for development/testing
+ * Mock Groq API for development/testing
  */
 export async function executeAgentMock(
   userMessage: string,
@@ -296,6 +300,6 @@ export async function executeAgentMock(
 }
 
 // Export the appropriate executor based on environment
-export const runAgent = process.env.NODE_ENV === 'development' && !process.env.KOLOSAL_API_KEY
+export const runAgent = process.env.NODE_ENV === 'development' && !process.env.GROQ_API_KEY
   ? executeAgentMock
   : executeAgent;

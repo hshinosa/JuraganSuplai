@@ -5,10 +5,9 @@ import { z } from 'zod';
  * Ensures all required env vars are present at runtime
  */
 const envSchema = z.object({
-  // Kolosal AI
-  KOLOSAL_API_URL: z.string().url().default('https://api.kolosal.ai/v1/agent/generate'),
-  KOLOSAL_API_KEY: z.string().min(1, 'KOLOSAL_API_KEY is required'),
-  KOLOSAL_WORKSPACE_ID: z.string().min(1, 'KOLOSAL_WORKSPACE_ID is required'),
+  // Groq AI
+  GROQ_API_KEY: z.string().min(1, 'GROQ_API_KEY is required'),
+  GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
   
   // Supabase
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -32,7 +31,7 @@ const envSchema = z.object({
 
 /**
  * Validated environment variables
- * Access via: env.KOLOSAL_API_KEY etc.
+ * Access via: env.GROQ_API_KEY etc.
  */
 function getEnv() {
   // Only validate on server-side

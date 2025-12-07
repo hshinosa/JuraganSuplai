@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/server';
 import { runAgent } from '@/lib/ai/executor';
-import '@/lib/ai/tools'; // Register all tools
+import '@/lib/ai/tools';
 import { sendWhatsApp } from '@/lib/ai/tools/send-whatsapp';
 import {
   startOnboarding,

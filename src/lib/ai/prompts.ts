@@ -1,5 +1,5 @@
 /**
- * Kolosal AI System Prompts
+ * Groq AI System Prompts
  * Indonesian B2B Logistics Assistant
  */
 
