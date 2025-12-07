@@ -2,144 +2,88 @@
 
 /**
  * Order Status Badge Component
- * Displays order status with modern styling
+ * Displays order status with appropriate styling
  */
 
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { Search, Clock, Truck, Package, CheckCircle2, AlertTriangle, XCircle, Loader2 } from 'lucide-react';
 import type { OrderStatus } from '@/types/database';
-import type { LucideIcon } from 'lucide-react';
 
 interface OrderStatusBadgeProps {
   status: OrderStatus;
   className?: string;
-  showIcon?: boolean;
-  size?: 'sm' | 'default' | 'lg';
 }
 
 const statusConfig: Record<OrderStatus, {
   label: string;
   className: string;
-  icon: LucideIcon;
-  pulse?: boolean;
 }> = {
   searching_supplier: {
     label: 'Mencari Supplier',
-    className: 'bg-blue-50 text-blue-700 border-blue-200/50',
-    icon: Search,
-    pulse: true,
+    className: 'bg-blue-100 text-blue-700 border-blue-200',
   },
   waiting_buyer_approval: {
     label: 'Menunggu Konfirmasi',
-    className: 'bg-violet-50 text-violet-700 border-violet-200/50',
-    icon: Clock,
-    pulse: true,
+    className: 'bg-purple-100 text-purple-700 border-purple-200',
   },
   negotiating_courier: {
     label: 'Mencari Kurir',
-    className: 'bg-indigo-50 text-indigo-700 border-indigo-200/50',
-    icon: Search,
-    pulse: true,
+    className: 'bg-purple-100 text-purple-700 border-purple-200',
   },
   stuck_no_courier: {
     label: 'Kurir Tidak Tersedia',
-    className: 'bg-orange-50 text-orange-700 border-orange-200/50',
-    icon: AlertTriangle,
+    className: 'bg-orange-100 text-orange-700 border-orange-200',
   },
   waiting_payment: {
-    label: 'Menunggu Pembayaran',
-    className: 'bg-amber-50 text-amber-700 border-amber-200/50',
-    icon: Clock,
-    pulse: true,
+    label: 'Menunggu Bayar',
+    className: 'bg-amber-100 text-amber-700 border-amber-200',
   },
   paid_held: {
     label: 'Siap Kirim',
-    className: 'bg-cyan-50 text-cyan-700 border-cyan-200/50',
-    icon: Package,
+    className: 'bg-cyan-100 text-cyan-700 border-cyan-200',
   },
   shipping: {
-    label: 'Dalam Pengiriman',
-    className: 'bg-blue-50 text-blue-700 border-blue-200/50',
-    icon: Truck,
-    pulse: true,
+    label: 'Sedang Diantar',
+    className: 'bg-emerald-100 text-emerald-700 border-emerald-200',
   },
   delivered: {
     label: 'Sampai Tujuan',
-    className: 'bg-teal-50 text-teal-700 border-teal-200/50',
-    icon: Package,
+    className: 'bg-teal-100 text-teal-700 border-teal-200',
   },
   dispute_check: {
-    label: 'Dalam Peninjauan',
-    className: 'bg-rose-50 text-rose-700 border-rose-200/50',
-    icon: AlertTriangle,
-    pulse: true,
+    label: 'Cek Keluhan',
+    className: 'bg-red-100 text-red-700 border-red-200',
   },
   completed: {
     label: 'Selesai',
-    className: 'bg-emerald-50 text-emerald-700 border-emerald-200/50',
-    icon: CheckCircle2,
+    className: 'bg-green-100 text-green-700 border-green-200',
   },
   refunded: {
-    label: 'Dana Dikembalikan',
-    className: 'bg-slate-100 text-slate-600 border-slate-200/50',
-    icon: XCircle,
+    label: 'Dikembalikan',
+    className: 'bg-gray-100 text-gray-700 border-gray-200',
   },
   cancelled_by_buyer: {
     label: 'Dibatalkan',
-    className: 'bg-slate-100 text-slate-500 border-slate-200/50',
-    icon: XCircle,
+    className: 'bg-gray-100 text-gray-700 border-gray-200',
   },
   failed_no_supplier: {
     label: 'Gagal',
-    className: 'bg-red-50 text-red-600 border-red-200/50',
-    icon: XCircle,
+    className: 'bg-red-100 text-red-700 border-red-200',
   },
 };
 
-const sizeClasses = {
-  sm: 'text-xs px-2 py-0.5 gap-1',
-  default: 'text-xs px-2.5 py-1 gap-1.5',
-  lg: 'text-sm px-3 py-1.5 gap-2',
-};
-
-const iconSizes = {
-  sm: 'h-3 w-3',
-  default: 'h-3.5 w-3.5',
-  lg: 'h-4 w-4',
-};
-
-export function OrderStatusBadge({ 
-  status, 
-  className, 
-  showIcon = true,
-  size = 'default' 
-}: OrderStatusBadgeProps) {
+export function OrderStatusBadge({ status, className }: OrderStatusBadgeProps) {
   const config = statusConfig[status] || {
     label: status,
-    className: 'bg-slate-100 text-slate-600 border-slate-200/50',
-    icon: Loader2,
+    className: 'bg-gray-100 text-gray-700',
   };
-
-  const Icon = config.icon;
 
   return (
     <Badge 
       variant="outline" 
-      className={cn(
-        'font-medium border rounded-full inline-flex items-center',
-        sizeClasses[size],
-        config.className,
-        className
-      )}
+      className={cn('font-medium border', config.className, className)}
     >
-      {showIcon && (
-        <Icon className={cn(
-          iconSizes[size],
-          config.pulse && 'animate-pulse'
-        )} />
-      )}
-      <span>{config.label}</span>
+      {config.label}
     </Badge>
   );
 }
