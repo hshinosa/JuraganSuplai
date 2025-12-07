@@ -26,9 +26,9 @@ export async function POST(request: NextRequest) {
 
     const supabase = createAdminClient();
 
-    // Get order to find courier_id
+    // Get order to find courier_id or supplier_id (for self-delivery)
     const { data: order, error: orderError } = await (supabase.from('orders') as any)
-      .select('courier_id, status')
+      .select('courier_id, supplier_id, status')
       .eq('id', orderId)
       .single();
 
@@ -39,9 +39,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!order.courier_id) {
+    // For self-delivery (no courier), use supplier_id
+    const deliveryPersonId = order.courier_id || order.supplier_id;
+    
+    if (!deliveryPersonId) {
       return NextResponse.json(
-        { error: 'No courier assigned to this order' },
+        { error: 'No courier or supplier assigned to this order' },
         { status: 400 }
       );
     }
@@ -57,13 +60,13 @@ export async function POST(request: NextRequest) {
     const locationPoint = `POINT(${lng} ${lat})`;
     const now = new Date().toISOString();
 
-    // Update courier's location in users table
+    // Update delivery person's location in users table
     const { error: userError } = await (supabase.from('users') as any)
       .update({
         location: locationPoint,
         updated_at: now,
       })
-      .eq('id', order.courier_id);
+      .eq('id', deliveryPersonId);
 
     if (userError) {
       console.error('[Location API] User update error:', userError);

@@ -251,6 +251,16 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
         return await handleOrderCancel(phone, 'supplier');
       }
       
+      // KIRIM - Supplier starts self-delivery (paid_held → shipping)
+      if (normalizedMessage === 'KIRIM' || normalizedMessage === 'ANTAR' || normalizedMessage === 'MULAI KIRIM') {
+        return await handleSupplierStartDelivery(phone);
+      }
+      
+      // SELESAI - Supplier marks self-delivery as complete (shipping → delivered)
+      if (normalizedMessage === 'SELESAI' || normalizedMessage === 'SUDAH SAMPAI') {
+        return await handleSupplierDelivered(phone);
+      }
+      
       // SALDO - Check wallet balance
       if (normalizedMessage === 'SALDO' || normalizedMessage === 'BALANCE') {
         return await handleCheckBalance(phone);
@@ -412,7 +422,7 @@ async function handleSupplierResponse(
       await (supabase.from('orders') as any).update(updateData).eq('id', orderId);
       
       // Notify buyer
-      const buyerData = order.buyer as { phone: string; name: string };
+      const buyerData = order.buyer as { phone: string; name: string; address: string };
       const paymentUrl = `${baseUrl}/pay/${orderId}`;
       
       await sendWhatsApp({
@@ -420,9 +430,13 @@ async function handleSupplierResponse(
         message: `✅ *Supplier Ditemukan!*\n\n${supplier.business_name || supplier.name} sanggup menyediakan ${order.product_name} dan akan mengantarkan sendiri.\n\nHarga: Rp ${order.buyer_price.toLocaleString('id-ID')}\nOngkir: GRATIS\n\n💳 Bayar sekarang:\n${paymentUrl}`,
       });
       
+      // Generate Google Maps link to buyer address
+      const deliveryAddress = order.delivery_address || buyerData.address || '';
+      const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(deliveryAddress)}`;
+      
       await sendWhatsApp({
         phone,
-        message: `✅ Order diterima!\n\nOrder ID: #${orderId.substring(0, 8)}\nProduk: ${order.product_name}\nAlamat antar: ${order.delivery_address}\n\nMenunggu pembayaran dari pembeli...`,
+        message: `✅ *Order Diterima!*\n\nOrder ID: #${orderId.substring(0, 8)}\n📦 ${order.product_name}\n💰 Harga: Rp ${order.buyer_price.toLocaleString('id-ID')}\n\n📍 *Alamat Antar:*\n${deliveryAddress}\n\n🗺️ *Lihat Rute:*\n${mapsUrl}\n\nMenunggu pembayaran dari pembeli...\nSetelah dibayar, balas *KIRIM* untuk mulai antar.`,
       });
       
       return 'Order accepted - self delivery';
@@ -773,6 +787,141 @@ async function handleOrderCancel(phone: string, role: 'supplier' | 'courier'): P
 }
 
 /**
+ * Handle supplier starting self-delivery (KIRIM)
+ * For orders where supplier chose "SANGGUP KIRIM" and will deliver themselves
+ */
+async function handleSupplierStartDelivery(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  
+  try {
+    // Get supplier
+    const { data: supplier } = await (supabase.from('users') as any)
+      .select('id, name, business_name')
+      .eq('phone', phone)
+      .eq('role', 'supplier')
+      .single();
+    
+    if (!supplier) {
+      await sendWhatsApp({ phone, message: '❌ Anda belum terdaftar sebagai supplier.' });
+      return 'Supplier not found';
+    }
+    
+    // Find order that is paid_held and has no courier (self-delivery)
+    const { data: order } = await (supabase.from('orders') as any)
+      .select('id, product_name, delivery_address, buyer:users!orders_buyer_id_fkey(phone, name)')
+      .eq('supplier_id', supplier.id)
+      .eq('status', 'paid_held')
+      .is('courier_id', null) // Self-delivery = no courier
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!order) {
+      await sendWhatsApp({ phone, message: '❌ Tidak ada pesanan yang siap diantar.\n\nPastikan pembeli sudah bayar dan Anda memilih antar sendiri.' });
+      return 'No order ready for self-delivery';
+    }
+    
+    // Update order status to shipping
+    await (supabase.from('orders') as any)
+      .update({
+        status: 'shipping',
+        pickup_at: new Date().toISOString(),
+      })
+      .eq('id', order.id);
+    
+    // Notify buyer
+    const buyerData = order.buyer as { phone: string; name: string };
+    const trackingUrl = `${baseUrl}/track/${order.id}`;
+    const supplierTrackingUrl = `${baseUrl}/track/${order.id}/courier`;
+    
+    await sendWhatsApp({
+      phone: buyerData.phone,
+      message: `🚚 *Barang Sedang Dikirim!*\n\nSupplier ${supplier.business_name || supplier.name} sedang mengantar pesanan Anda.\n\n📦 ${order.product_name}\n📍 ${order.delivery_address}\n\n🗺️ Lacak: ${trackingUrl}\n\nSiapkan diri untuk menerima barang!`,
+    });
+    
+    await sendWhatsApp({
+      phone,
+      message: `✅ *Pengantaran Dimulai!*\n\nOrder ID: #${order.id.substring(0, 8)}\n📦 ${order.product_name}\n📍 ${order.delivery_address}\n\n🗺️ *Buka link ini untuk:*\n• Share lokasi real-time ke pembeli\n• Lihat rute ke alamat tujuan\n${supplierTrackingUrl}\n\nSetelah barang sampai, balas *SELESAI* untuk konfirmasi.`,
+    });
+    
+    return 'Self-delivery started';
+    
+  } catch (error) {
+    console.error('[handleSupplierStartDelivery] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error starting delivery';
+  }
+}
+
+/**
+ * Handle supplier marking self-delivery as complete (SELESAI)
+ * For orders where supplier delivered themselves
+ */
+async function handleSupplierDelivered(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  
+  try {
+    // Get supplier
+    const { data: supplier } = await (supabase.from('users') as any)
+      .select('id, name, business_name')
+      .eq('phone', phone)
+      .eq('role', 'supplier')
+      .single();
+    
+    if (!supplier) {
+      await sendWhatsApp({ phone, message: '❌ Anda belum terdaftar sebagai supplier.' });
+      return 'Supplier not found';
+    }
+    
+    // Find shipping order with self-delivery (no courier)
+    const { data: order } = await (supabase.from('orders') as any)
+      .select('id, product_name, buyer:users!orders_buyer_id_fkey(phone, name)')
+      .eq('supplier_id', supplier.id)
+      .eq('status', 'shipping')
+      .is('courier_id', null) // Self-delivery = no courier
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!order) {
+      await sendWhatsApp({ phone, message: '❌ Tidak ada pesanan yang sedang dalam pengiriman.\n\nBalas *KIRIM* dulu untuk mulai antar.' });
+      return 'No shipping order';
+    }
+    
+    // Update order status to delivered
+    await (supabase.from('orders') as any)
+      .update({
+        status: 'delivered',
+        delivered_at: new Date().toISOString(),
+      })
+      .eq('id', order.id);
+    
+    // Notify buyer to confirm
+    const buyerData = order.buyer as { phone: string; name: string };
+    const confirmUrl = `${baseUrl}/confirm/${order.id}`;
+    
+    await sendWhatsApp({
+      phone: buyerData.phone,
+      message: `📦 *Barang Sudah Sampai!*\n\nSupplier melaporkan pesanan sudah dikirim.\n\n✅ Konfirmasi penerimaan:\n${confirmUrl}\n\nAtau scan QR dari supplier.`,
+    });
+    
+    await sendWhatsApp({
+      phone,
+      message: `✅ *Pengantaran Selesai!*\n\nOrder ID: #${order.id.substring(0, 8)}\n\nMinta pembeli untuk konfirmasi di:\n${confirmUrl}\n\nAtau tunjukkan QR code di link tersebut.\n\n💰 Dana akan diteruskan setelah konfirmasi.`,
+    });
+    
+    return 'Self-delivery marked as complete';
+    
+  } catch (error) {
+    console.error('[handleSupplierDelivered] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error marking delivery';
+  }
+}
+
+/**
  * Handle courier marking delivery as complete (SELESAI)
  */
 async function handleCourierDelivered(phone: string): Promise<string> {
@@ -1076,7 +1225,7 @@ async function handleSupplierHistory(phone: string): Promise<string> {
  * Handle supplier help (BANTUAN)
  */
 async function handleSupplierHelp(phone: string): Promise<string> {
-  const helpMessage = `📚 *Bantuan Supplier*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat pesanan aktif\n📜 *RIWAYAT* - Riwayat pesanan\n💰 *SALDO* - Cek saldo\n\n📨 *Respons Order:*\n✅ *SANGGUP KIRIM* - Terima & antar sendiri\n✅ *SANGGUP AMBIL* - Terima, butuh kurir\n❌ *TIDAK* - Tolak pesanan\n🚫 *BATAL* - Batalkan order aktif\n\n━━━━━━━━━━━━━━━\n❓ Butuh bantuan lain?\nHubungi admin: 0812-xxxx-xxxx`;
+  const helpMessage = `📚 *Bantuan Supplier*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat pesanan aktif\n📜 *RIWAYAT* - Riwayat pesanan\n💰 *SALDO* - Cek saldo\n\n📨 *Respons Order:*\n✅ *SANGGUP KIRIM* - Terima & antar sendiri\n✅ *SANGGUP AMBIL* - Terima, butuh kurir\n❌ *TIDAK* - Tolak pesanan\n🚫 *BATAL* - Batalkan order aktif\n\n🚚 *Antar Sendiri:*\n📤 *KIRIM* - Mulai pengantaran\n✅ *SELESAI* - Barang sudah sampai\n\n━━━━━━━━━━━━━━━\n❓ Butuh bantuan lain?\nHubungi admin: 0812-xxxx-xxxx`;
   
   await sendWhatsApp({ phone, message: `✅ ${helpMessage}` });
   return 'Supplier help sent';
