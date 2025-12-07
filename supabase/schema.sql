@@ -79,8 +79,6 @@ CREATE TABLE users (
   
   -- Verification
   is_verified BOOLEAN DEFAULT FALSE,
-  ktp_image_url TEXT,
-  selfie_image_url TEXT,
   
   -- Supplier specific
   business_name VARCHAR(255),
