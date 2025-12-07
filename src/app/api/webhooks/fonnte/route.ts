@@ -8,6 +8,8 @@ import { createAdminClient } from '@/lib/supabase/server';
 import { runAgent } from '@/lib/ai/executor';
 import '@/lib/ai/tools';
 import { sendWhatsApp } from '@/lib/ai/tools/send-whatsapp';
+import { findCouriers } from '@/lib/ai/tools/find-couriers';
+import { templates } from '@/lib/whatsapp/templates';
 import {
   startOnboarding,
   handleRoleSelection,
@@ -204,15 +206,1104 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
     return await handleLocationUpdate(phone, payload.location);
   }
   
-  // If user is registered and not in onboarding, could pass to agent here
+  // If user is registered and not in onboarding, handle order commands
   if (onboardingStep === 'completed' && userRole) {
-    console.log(`[Webhook] User ${phone} is registered (role: ${userRole}). Passing to agent...`);
-    // TODO: Implement agent flow for ongoing order management
+    console.log(`[Webhook] User ${phone} is registered (role: ${userRole}). Processing order commands...`);
+    
+    const normalizedMessage = message.toUpperCase().trim();
+    
+    // ========================
+    // SUPPLIER COMMANDS
+    // ========================
+    if (userRole === 'supplier') {
+      // DASHBOARD - Show supplier dashboard
+      if (normalizedMessage === 'DASHBOARD' || normalizedMessage === 'MENU' || normalizedMessage === 'HOME') {
+        return await handleSupplierDashboard(phone);
+      }
+      
+      // ORDER - Show active orders
+      if (normalizedMessage === 'ORDER' || normalizedMessage === 'PESANAN' || normalizedMessage === 'ORDERAN') {
+        return await handleSupplierOrders(phone);
+      }
+      
+      // RIWAYAT - Show order history
+      if (normalizedMessage === 'RIWAYAT' || normalizedMessage === 'HISTORY' || normalizedMessage === 'HISTORI') {
+        return await handleSupplierHistory(phone);
+      }
+      
+      // SANGGUP KIRIM - Supplier accepts and will deliver themselves
+      if (normalizedMessage.includes('SANGGUP KIRIM')) {
+        return await handleSupplierResponse(phone, 'self');
+      }
+      
+      // SANGGUP AMBIL - Supplier accepts but needs courier
+      if (normalizedMessage.includes('SANGGUP AMBIL') || normalizedMessage === 'SANGGUP') {
+        return await handleSupplierResponse(phone, 'courier');
+      }
+      
+      // TIDAK - Supplier rejects
+      if (normalizedMessage === 'TIDAK' || normalizedMessage.includes('TIDAK BISA') || normalizedMessage.includes('TOLAK')) {
+        return await handleSupplierReject(phone);
+      }
+      
+      // BATAL - Cancel active order
+      if (normalizedMessage === 'BATAL' || normalizedMessage.includes('CANCEL')) {
+        return await handleOrderCancel(phone, 'supplier');
+      }
+      
+      // SALDO - Check wallet balance
+      if (normalizedMessage === 'SALDO' || normalizedMessage === 'BALANCE') {
+        return await handleCheckBalance(phone);
+      }
+      
+      // BANTUAN - Show help
+      if (normalizedMessage === 'BANTUAN' || normalizedMessage === 'HELP' || normalizedMessage === '?') {
+        return await handleSupplierHelp(phone);
+      }
+    }
+    
+    // ========================
+    // COURIER COMMANDS
+    // ========================
+    if (userRole === 'courier') {
+      // DASHBOARD - Show courier dashboard
+      if (normalizedMessage === 'DASHBOARD' || normalizedMessage === 'MENU' || normalizedMessage === 'HOME') {
+        return await handleCourierDashboard(phone);
+      }
+      
+      // ORDER - Show active delivery jobs
+      if (normalizedMessage === 'ORDER' || normalizedMessage === 'JOB' || normalizedMessage === 'ANTARAN') {
+        return await handleCourierOrders(phone);
+      }
+      
+      // RIWAYAT - Show delivery history
+      if (normalizedMessage === 'RIWAYAT' || normalizedMessage === 'HISTORY' || normalizedMessage === 'HISTORI') {
+        return await handleCourierHistory(phone);
+      }
+      
+      // AMBIL - Courier accepts job
+      if (normalizedMessage === 'AMBIL' || normalizedMessage.includes('TERIMA')) {
+        return await handleCourierAccept(phone);
+      }
+      
+      // BATAL - Cancel/reject job
+      if (normalizedMessage === 'BATAL' || normalizedMessage.includes('DARURAT BATAL')) {
+        return await handleOrderCancel(phone, 'courier');
+      }
+      
+      // SELESAI - Mark delivery complete (alternative to QR scan)
+      if (normalizedMessage === 'SELESAI' || normalizedMessage.includes('DELIVERED')) {
+        return await handleCourierDelivered(phone);
+      }
+      
+      // SALDO - Check wallet balance
+      if (normalizedMessage === 'SALDO' || normalizedMessage === 'BALANCE') {
+        return await handleCheckBalance(phone);
+      }
+      
+      // BANTUAN - Show help
+      if (normalizedMessage === 'BANTUAN' || normalizedMessage === 'HELP' || normalizedMessage === '?') {
+        return await handleCourierHelp(phone);
+      }
+    }
+    
+    // If no command matched, use AI agent for natural conversation
+    console.log(`[Webhook] No command matched, passing to AI agent...`);
+    const agentResult = await runAgent(message, [], { phone, userId: userData?.id });
+    
+    if (agentResult.success && agentResult.response) {
+      await sendWhatsApp({ phone, message: `✅ ${agentResult.response}` });
+      return agentResult.response;
+    }
   }
   
   // Default: log message
   console.log(`[Webhook] Non-command message from ${phone}: "${message.substring(0, 50)}..."`);
   return 'Message logged';
+}
+
+// ========================
+// ORDER COMMAND HANDLERS
+// ========================
+
+/**
+ * Handle supplier response (SANGGUP KIRIM / SANGGUP AMBIL)
+ */
+async function handleSupplierResponse(
+  phone: string,
+  deliveryMethod: 'self' | 'courier'
+): Promise<string> {
+  const supabase = createAdminClient();
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  
+  try {
+    // Get supplier by phone
+    const { data: supplier } = await (supabase.from('users') as any)
+      .select('id, name, phone, address, location, business_name')
+      .eq('phone', phone)
+      .eq('role', 'supplier')
+      .single();
+    
+    if (!supplier) {
+      await sendWhatsApp({ phone, message: '❌ Anda belum terdaftar sebagai supplier.' });
+      return 'Supplier not found';
+    }
+    
+    // Check supplier capacity (max 3 active orders)
+    const { count: activeOrders } = await supabase
+      .from('orders')
+      .select('*', { count: 'exact', head: true })
+      .eq('supplier_id', supplier.id)
+      .in('status', ['paid_held', 'shipping', 'waiting_payment']);
+    
+    if ((activeOrders || 0) >= 3) {
+      await sendWhatsApp({ phone, message: templates.supplierBusy() });
+      return 'Supplier at capacity';
+    }
+    
+    // Find pending broadcast for this supplier
+    const { data: broadcast } = await (supabase.from('order_broadcasts') as any)
+      .select('order_id')
+      .eq('supplier_id', supplier.id)
+      .is('response', null)
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!broadcast) {
+      await sendWhatsApp({ phone, message: '❌ Tidak ada pesanan yang menunggu respons Anda.' });
+      return 'No pending order';
+    }
+    
+    const orderId = broadcast.order_id;
+    
+    // Get order details
+    const { data: order } = await (supabase.from('orders') as any)
+      .select('*, buyer:users!orders_buyer_id_fkey(phone, address, name)')
+      .eq('id', orderId)
+      .single();
+    
+    if (!order || order.status !== 'searching_supplier') {
+      await sendWhatsApp({ phone, message: '❌ Order sudah diambil supplier lain.' });
+      return 'Order already taken';
+    }
+    
+    // Record broadcast response
+    await (supabase.from('order_broadcasts') as any)
+      .update({
+        response: deliveryMethod === 'self' ? 'SANGGUP KIRIM' : 'SANGGUP AMBIL',
+        responded_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('supplier_id', supplier.id);
+    
+    // Update order with supplier
+    const updateData: Record<string, unknown> = {
+      supplier_id: supplier.id,
+      supplier_price: order.buyer_price,
+      pickup_address: supplier.address,
+    };
+    
+    if (deliveryMethod === 'self') {
+      // Supplier will deliver themselves
+      updateData.status = 'waiting_payment';
+      updateData.shipping_cost = 0;
+      
+      await (supabase.from('orders') as any).update(updateData).eq('id', orderId);
+      
+      // Notify buyer
+      const buyerData = order.buyer as { phone: string; name: string };
+      const paymentUrl = `${baseUrl}/pay/${orderId}`;
+      
+      await sendWhatsApp({
+        phone: buyerData.phone,
+        message: `✅ *Supplier Ditemukan!*\n\n${supplier.business_name || supplier.name} sanggup menyediakan ${order.product_name} dan akan mengantarkan sendiri.\n\nHarga: Rp ${order.buyer_price.toLocaleString('id-ID')}\nOngkir: GRATIS\n\n💳 Bayar sekarang:\n${paymentUrl}`,
+      });
+      
+      await sendWhatsApp({
+        phone,
+        message: `✅ Order diterima!\n\nOrder ID: #${orderId.substring(0, 8)}\nProduk: ${order.product_name}\nAlamat antar: ${order.delivery_address}\n\nMenunggu pembayaran dari pembeli...`,
+      });
+      
+      return 'Order accepted - self delivery';
+      
+    } else {
+      // Need courier - search for available couriers
+      updateData.status = 'negotiating_courier';
+      await (supabase.from('orders') as any).update(updateData).eq('id', orderId);
+      
+      // Find couriers
+      const lat = extractLat(supplier.location);
+      const lng = extractLng(supplier.location);
+      
+      const couriersResult = JSON.parse(
+        await findCouriers({ lat, lng, radiusKm: 5, maxResults: 5 })
+      );
+      
+      if (!couriersResult.success || couriersResult.found === 0) {
+        await (supabase.from('orders') as any)
+          .update({ status: 'stuck_no_courier' })
+          .eq('id', orderId);
+        
+        await sendWhatsApp({
+          phone,
+          message: `✅ Order diterima!\n\n⚠️ Tapi kurir belum tersedia di area Anda.\n\nPilihan:\n1. Antar sendiri (balas "SANGGUP KIRIM")\n2. Tunggu kurir tersedia\n3. Balas "BATAL" untuk tolak order`,
+        });
+        
+        return 'Order accepted but no courier available';
+      }
+      
+      // Broadcast to couriers
+      const buyerData = order.buyer as { phone: string; address: string };
+      
+      for (const courier of couriersResult.couriers) {
+        await (supabase.from('courier_broadcasts') as any).insert({
+          order_id: orderId,
+          courier_id: courier.id,
+        });
+        
+        const shippingCost = Math.max(10000, Math.round(courier.distance_km * 5000));
+        
+        await sendWhatsApp({
+          phone: courier.phone,
+          message: templates.courierJobOffer({
+            supplier_name: supplier.business_name || supplier.name || 'Supplier',
+            supplier_address: supplier.address || 'Lihat lokasi',
+            buyer_address: buyerData?.address || order.delivery_address || 'Lihat lokasi',
+            distance_km: courier.distance_km,
+            shipping_cost: shippingCost,
+            product_name: order.product_name,
+            quantity: order.quantity,
+            unit: order.unit,
+            weight_kg: order.weight_kg || 0,
+            order_id: orderId,
+          }),
+        });
+      }
+      
+      await sendWhatsApp({
+        phone,
+        message: `✅ Order diterima!\n\nOrder ID: #${orderId.substring(0, 8)}\nProduk: ${order.product_name}\n\n🚚 Mencari kurir (${couriersResult.found} kurir dihubungi)...\n\nAnda akan dinotifikasi saat kurir terkonfirmasi.`,
+      });
+      
+      return `Order accepted - searching ${couriersResult.found} couriers`;
+    }
+    
+  } catch (error) {
+    console.error('[handleSupplierResponse] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error processing response';
+  }
+}
+
+/**
+ * Handle supplier rejection (TIDAK)
+ */
+async function handleSupplierReject(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    // Get supplier
+    const { data: supplier } = await (supabase.from('users') as any)
+      .select('id')
+      .eq('phone', phone)
+      .eq('role', 'supplier')
+      .single();
+    
+    if (!supplier) {
+      await sendWhatsApp({ phone, message: '❌ Anda belum terdaftar sebagai supplier.' });
+      return 'Supplier not found';
+    }
+    
+    // Find pending broadcast
+    const { data: broadcast } = await (supabase.from('order_broadcasts') as any)
+      .select('order_id')
+      .eq('supplier_id', supplier.id)
+      .is('response', null)
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!broadcast) {
+      await sendWhatsApp({ phone, message: '❌ Tidak ada pesanan yang menunggu respons Anda.' });
+      return 'No pending order';
+    }
+    
+    const orderId = broadcast.order_id;
+    
+    // Record rejection
+    await (supabase.from('order_broadcasts') as any)
+      .update({
+        response: 'TIDAK',
+        responded_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('supplier_id', supplier.id);
+    
+    // Check if all suppliers rejected
+    const { data: broadcasts } = await (supabase.from('order_broadcasts') as any)
+      .select('response')
+      .eq('order_id', orderId);
+    
+    const allResponded = broadcasts?.every((b: { response: string | null }) => b.response !== null);
+    const allRejected = broadcasts?.every((b: { response: string | null }) => b.response === 'TIDAK');
+    
+    if (allResponded && allRejected) {
+      await (supabase.from('orders') as any)
+        .update({ status: 'failed_no_supplier' })
+        .eq('id', orderId);
+      
+      // Notify buyer
+      const { data: order } = await (supabase.from('orders') as any)
+        .select('buyer:users!orders_buyer_id_fkey(phone)')
+        .eq('id', orderId)
+        .single();
+      
+      if (order?.buyer) {
+        await sendWhatsApp({
+          phone: (order.buyer as { phone: string }).phone,
+          message: `😔 Maaf, tidak ada supplier yang tersedia untuk pesanan Anda saat ini.\n\nCoba lagi nanti atau ubah lokasi/produk.`,
+        });
+      }
+    }
+    
+    await sendWhatsApp({ phone, message: '✅ Respons Anda dicatat. Terima kasih!' });
+    return 'Rejection recorded';
+    
+  } catch (error) {
+    console.error('[handleSupplierReject] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error processing rejection';
+  }
+}
+
+/**
+ * Handle courier accepting a job (AMBIL)
+ */
+async function handleCourierAccept(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  
+  try {
+    // Get courier
+    const { data: courier } = await (supabase.from('users') as any)
+      .select('id, name, phone, is_busy')
+      .eq('phone', phone)
+      .eq('role', 'courier')
+      .single();
+    
+    if (!courier) {
+      await sendWhatsApp({ phone, message: '❌ Anda belum terdaftar sebagai kurir.' });
+      return 'Courier not found';
+    }
+    
+    if (courier.is_busy) {
+      await sendWhatsApp({ phone, message: '❌ Anda sedang menangani order lain. Selesaikan dulu sebelum ambil job baru.' });
+      return 'Courier busy';
+    }
+    
+    // Find pending broadcast
+    const { data: broadcast } = await (supabase.from('courier_broadcasts') as any)
+      .select('order_id')
+      .eq('courier_id', courier.id)
+      .is('response', null)
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!broadcast) {
+      await sendWhatsApp({ phone, message: '❌ Tidak ada job yang menunggu respons Anda.' });
+      return 'No pending job';
+    }
+    
+    const orderId = broadcast.order_id;
+    
+    // Check if order still available
+    const { data: order } = await (supabase.from('orders') as any)
+      .select(`
+        *,
+        supplier:users!orders_supplier_id_fkey(id, name, phone, address, business_name),
+        buyer:users!orders_buyer_id_fkey(id, phone, address)
+      `)
+      .eq('id', orderId)
+      .eq('status', 'negotiating_courier')
+      .single();
+    
+    if (!order) {
+      await sendWhatsApp({ phone, message: '❌ Job sudah diambil kurir lain.' });
+      return 'Job already taken';
+    }
+    
+    // Calculate shipping cost
+    const shippingCost = Math.max(10000, Math.round((order.distance_km || 5) * 5000));
+    
+    // Mark courier as busy
+    await (supabase.from('users') as any)
+      .update({ is_busy: true })
+      .eq('id', courier.id);
+    
+    // Update order with courier
+    await (supabase.from('orders') as any)
+      .update({
+        courier_id: courier.id,
+        shipping_cost: shippingCost,
+        status: 'waiting_payment',
+      })
+      .eq('id', orderId);
+    
+    // Record response
+    await (supabase.from('courier_broadcasts') as any)
+      .update({
+        response: 'AMBIL',
+        responded_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('courier_id', courier.id);
+    
+    const supplierData = order.supplier as { id: string; name: string; phone: string; address: string; business_name: string };
+    const buyerData = order.buyer as { id: string; phone: string; address: string };
+    
+    // Send tracking URL to courier
+    const trackingUrl = `${baseUrl}/track/${orderId}`;
+    
+    await sendWhatsApp({
+      phone,
+      message: `✅ *Job Diterima!*\n\nOrder ID: #${orderId.substring(0, 8)}\nOngkir: Rp ${shippingCost.toLocaleString('id-ID')}\n\n📍 *Alamat Pickup:*\n${supplierData.address || 'Hubungi supplier'}\n${supplierData.business_name || supplierData.name} (${supplierData.phone})\n\n📍 *Alamat Antar:*\n${order.delivery_address || buyerData.address}\n\n🗺️ *Link Tracking:*\n${trackingUrl}\n\nSetelah pickup, kirim foto barang dan update lokasi Anda.`,
+    });
+    
+    // Notify supplier
+    await sendWhatsApp({
+      phone: supplierData.phone,
+      message: `🚚 *Kurir Dikonfirmasi!*\n\nKurir: ${courier.name}\nNo HP: ${courier.phone}\n\n📦 Mohon siapkan barang.\nKurir akan segera menuju lokasi Anda.\n\n🗺️ Lacak: ${trackingUrl}`,
+    });
+    
+    // Notify buyer
+    const paymentUrl = `${baseUrl}/pay/${orderId}`;
+    const totalAmount = order.buyer_price + (order.service_fee || 0) + shippingCost;
+    
+    await sendWhatsApp({
+      phone: buyerData.phone,
+      message: `✅ *Kurir Ditemukan!*\n\n${supplierData.business_name || supplierData.name} akan menyediakan ${order.product_name}.\nKurir ${courier.name} akan mengantarkan.\n\nHarga: Rp ${order.buyer_price.toLocaleString('id-ID')}\nOngkir: Rp ${shippingCost.toLocaleString('id-ID')}\nTotal: Rp ${totalAmount.toLocaleString('id-ID')}\n\n💳 Bayar sekarang:\n${paymentUrl}`,
+    });
+    
+    return 'Job accepted';
+    
+  } catch (error) {
+    console.error('[handleCourierAccept] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error processing acceptance';
+  }
+}
+
+/**
+ * Handle order cancellation (BATAL)
+ */
+async function handleOrderCancel(phone: string, role: 'supplier' | 'courier'): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    // Get user
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id, name')
+      .eq('phone', phone)
+      .eq('role', role)
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ User tidak ditemukan.' });
+      return 'User not found';
+    }
+    
+    // Find active order
+    const columnName = role === 'supplier' ? 'supplier_id' : 'courier_id';
+    const { data: order } = await (supabase.from('orders') as any)
+      .select('id, status, buyer:users!orders_buyer_id_fkey(phone)')
+      .eq(columnName, user.id)
+      .in('status', ['searching_supplier', 'negotiating_courier', 'waiting_payment', 'paid_held'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!order) {
+      await sendWhatsApp({ phone, message: '❌ Tidak ada order aktif untuk dibatalkan.' });
+      return 'No active order';
+    }
+    
+    // Can only cancel before shipping
+    if (order.status === 'shipping' || order.status === 'delivered') {
+      await sendWhatsApp({ phone, message: '❌ Order sudah dalam pengiriman, tidak bisa dibatalkan.' });
+      return 'Cannot cancel - already shipping';
+    }
+    
+    // Update order status
+    const updateData: Record<string, unknown> = {
+      status: 'cancelled_by_buyer', // Reusing status for simplicity
+    };
+    
+    if (role === 'courier') {
+      updateData.courier_id = null;
+      updateData.status = 'negotiating_courier'; // Go back to finding courier
+      
+      // Mark courier as not busy
+      await (supabase.from('users') as any)
+        .update({ is_busy: false })
+        .eq('id', user.id);
+    }
+    
+    await (supabase.from('orders') as any).update(updateData).eq('id', order.id);
+    
+    // Notify buyer
+    const buyerData = order.buyer as { phone: string };
+    if (buyerData?.phone) {
+      const reason = role === 'supplier' ? 'Supplier' : 'Kurir';
+      await sendWhatsApp({
+        phone: buyerData.phone,
+        message: `⚠️ ${reason} membatalkan order #${order.id.substring(0, 8)}.\n\nKami sedang mencari ${role === 'supplier' ? 'supplier' : 'kurir'} pengganti...`,
+      });
+    }
+    
+    await sendWhatsApp({ phone, message: '✅ Order berhasil dibatalkan.' });
+    return 'Order cancelled';
+    
+  } catch (error) {
+    console.error('[handleOrderCancel] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error cancelling order';
+  }
+}
+
+/**
+ * Handle courier marking delivery as complete (SELESAI)
+ */
+async function handleCourierDelivered(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  
+  try {
+    // Get courier
+    const { data: courier } = await (supabase.from('users') as any)
+      .select('id, name')
+      .eq('phone', phone)
+      .eq('role', 'courier')
+      .single();
+    
+    if (!courier) {
+      await sendWhatsApp({ phone, message: '❌ Anda belum terdaftar sebagai kurir.' });
+      return 'Courier not found';
+    }
+    
+    // Find shipping order
+    const { data: order } = await (supabase.from('orders') as any)
+      .select('id, buyer:users!orders_buyer_id_fkey(phone)')
+      .eq('courier_id', courier.id)
+      .eq('status', 'shipping')
+      .single();
+    
+    if (!order) {
+      await sendWhatsApp({ phone, message: '❌ Tidak ada order yang sedang dalam pengiriman.' });
+      return 'No shipping order';
+    }
+    
+    // Update order status
+    await (supabase.from('orders') as any)
+      .update({
+        status: 'delivered',
+        delivered_at: new Date().toISOString(),
+      })
+      .eq('id', order.id);
+    
+    // Mark courier as not busy
+    await (supabase.from('users') as any)
+      .update({ is_busy: false })
+      .eq('id', courier.id);
+    
+    // Notify buyer to confirm
+    const buyerData = order.buyer as { phone: string };
+    const confirmUrl = `${baseUrl}/confirm/${order.id}`;
+    
+    await sendWhatsApp({
+      phone: buyerData.phone,
+      message: `📦 *Barang Sudah Sampai!*\n\nKurir melaporkan pesanan sudah dikirim.\n\n✅ Konfirmasi penerimaan:\n${confirmUrl}\n\nAtau scan QR dari kurir.`,
+    });
+    
+    await sendWhatsApp({
+      phone,
+      message: `✅ Status diupdate ke "Delivered".\n\nMinta pembeli untuk konfirmasi di:\n${confirmUrl}\n\nDana akan diteruskan setelah konfirmasi.`,
+    });
+    
+    return 'Delivery marked as complete';
+    
+  } catch (error) {
+    console.error('[handleCourierDelivered] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error marking delivery';
+  }
+}
+
+/**
+ * Handle balance check (SALDO)
+ */
+async function handleCheckBalance(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    // Get user
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id, name, role')
+      .eq('phone', phone)
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ User tidak ditemukan.' });
+      return 'User not found';
+    }
+    
+    // Get wallet
+    const { data: wallet } = await (supabase
+      .from('wallets') as any)
+      .select('available, escrow_held, total_earned')
+      .eq('user_id', user.id)
+      .single();
+    
+    const walletData = wallet as { available: number; escrow_held: number; total_earned: number } | null;
+    const available = walletData?.available || 0;
+    const escrow = walletData?.escrow_held || 0;
+    const totalEarned = walletData?.total_earned || 0;
+    
+    const message = `💰 *Saldo ${user.name}*\n\n✅ Tersedia: Rp ${available.toLocaleString('id-ID')}\n🔒 Ditahan: Rp ${escrow.toLocaleString('id-ID')}\n📊 Total Pendapatan: Rp ${totalEarned.toLocaleString('id-ID')}\n\nSaldo tersedia bisa ditarik kapan saja.`;
+    
+    await sendWhatsApp({ phone, message: `✅ ${message}` });
+    return 'Balance checked';
+    
+  } catch (error) {
+    console.error('[handleCheckBalance] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Terjadi kesalahan. Coba lagi.' });
+    return 'Error checking balance';
+  }
+}
+
+// ========================
+// SUPPLIER DASHBOARD HANDLERS
+// ========================
+
+/**
+ * Handle supplier dashboard (DASHBOARD)
+ */
+async function handleSupplierDashboard(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id, name, business_name')
+      .eq('phone', phone)
+      .eq('role', 'supplier')
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ Supplier tidak ditemukan.' });
+      return 'Supplier not found';
+    }
+    
+    // Get wallet balance
+    const { data: wallet } = await (supabase.from('wallets') as any)
+      .select('available, escrow_held')
+      .eq('user_id', user.id)
+      .single();
+    
+    const available = wallet?.available || 0;
+    const escrow = wallet?.escrow_held || 0;
+    
+    // Count active orders
+    const { count: activeOrders } = await (supabase.from('orders') as any)
+      .select('*', { count: 'exact', head: true })
+      .eq('supplier_id', user.id)
+      .in('status', ['waiting_payment', 'paid_held', 'shipping']);
+    
+    // Count completed orders this month
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    
+    const { count: monthlyOrders } = await (supabase.from('orders') as any)
+      .select('*', { count: 'exact', head: true })
+      .eq('supplier_id', user.id)
+      .eq('status', 'completed')
+      .gte('completed_at', startOfMonth.toISOString());
+    
+    const dashboardMessage = `🏪 *Dashboard Supplier*\n━━━━━━━━━━━━━━━\n\n👋 Halo, *${user.business_name || user.name}*!\n\n💰 *Saldo*\n├ Tersedia: Rp ${available.toLocaleString('id-ID')}\n└ Ditahan: Rp ${escrow.toLocaleString('id-ID')}\n\n📦 *Order*\n├ Aktif: ${activeOrders || 0} pesanan\n└ Bulan ini: ${monthlyOrders || 0} selesai\n\n━━━━━━━━━━━━━━━\n📌 *Perintah:*\n• ORDER - Lihat pesanan aktif\n• RIWAYAT - Lihat riwayat\n• SALDO - Cek saldo detail\n• BANTUAN - Menu lengkap`;
+    
+    await sendWhatsApp({ phone, message: `✅ ${dashboardMessage}` });
+    return 'Supplier dashboard sent';
+    
+  } catch (error) {
+    console.error('[handleSupplierDashboard] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Gagal memuat dashboard.' });
+    return 'Error loading dashboard';
+  }
+}
+
+/**
+ * Handle supplier active orders (ORDER)
+ */
+async function handleSupplierOrders(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id, name')
+      .eq('phone', phone)
+      .eq('role', 'supplier')
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ Supplier tidak ditemukan.' });
+      return 'Supplier not found';
+    }
+    
+    // Get active orders
+    const { data: orders } = await (supabase.from('orders') as any)
+      .select('id, product_name, quantity, buyer_price, status, created_at, buyer:users!orders_buyer_id_fkey(name)')
+      .eq('supplier_id', user.id)
+      .in('status', ['searching_supplier', 'negotiating_courier', 'waiting_payment', 'paid_held', 'shipping'])
+      .order('created_at', { ascending: false })
+      .limit(5);
+    
+    if (!orders || orders.length === 0) {
+      await sendWhatsApp({ phone, message: '✅ Tidak ada pesanan aktif saat ini.\n\nTunggu broadcast order dari sistem!' });
+      return 'No active orders';
+    }
+    
+    const statusEmoji: Record<string, string> = {
+      'searching_supplier': '🔍',
+      'negotiating_courier': '🚚',
+      'waiting_payment': '💳',
+      'paid_held': '💰',
+      'shipping': '📦',
+    };
+    
+    const statusText: Record<string, string> = {
+      'searching_supplier': 'Mencari Supplier',
+      'negotiating_courier': 'Mencari Kurir',
+      'waiting_payment': 'Menunggu Bayar',
+      'paid_held': 'Dibayar',
+      'shipping': 'Dikirim',
+    };
+    
+    let orderList = '📦 *Pesanan Aktif*\n━━━━━━━━━━━━━━━\n\n';
+    
+    orders.forEach((order: any, index: number) => {
+      const buyerName = order.buyer?.name || 'Buyer';
+      const emoji = statusEmoji[order.status] || '📋';
+      const status = statusText[order.status] || order.status;
+      
+      orderList += `${index + 1}. *#${order.id.substring(0, 8)}*\n`;
+      orderList += `   ${order.product_name} x${order.quantity}\n`;
+      orderList += `   💵 Rp ${order.buyer_price.toLocaleString('id-ID')}\n`;
+      orderList += `   ${emoji} ${status}\n`;
+      orderList += `   👤 ${buyerName}\n\n`;
+    });
+    
+    orderList += '━━━━━━━━━━━━━━━\nBalas DASHBOARD untuk kembali';
+    
+    await sendWhatsApp({ phone, message: `✅ ${orderList}` });
+    return 'Supplier orders sent';
+    
+  } catch (error) {
+    console.error('[handleSupplierOrders] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Gagal memuat pesanan.' });
+    return 'Error loading orders';
+  }
+}
+
+/**
+ * Handle supplier order history (RIWAYAT)
+ */
+async function handleSupplierHistory(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id')
+      .eq('phone', phone)
+      .eq('role', 'supplier')
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ Supplier tidak ditemukan.' });
+      return 'Supplier not found';
+    }
+    
+    // Get completed/cancelled orders
+    const { data: orders } = await (supabase.from('orders') as any)
+      .select('id, product_name, buyer_price, status, completed_at, cancelled_at')
+      .eq('supplier_id', user.id)
+      .in('status', ['completed', 'cancelled_by_buyer', 'cancelled_by_supplier', 'refunded'])
+      .order('created_at', { ascending: false })
+      .limit(10);
+    
+    if (!orders || orders.length === 0) {
+      await sendWhatsApp({ phone, message: '✅ Belum ada riwayat pesanan.\n\nSelesaikan pesanan untuk melihat riwayat!' });
+      return 'No order history';
+    }
+    
+    let historyList = '📜 *Riwayat Pesanan*\n━━━━━━━━━━━━━━━\n\n';
+    
+    orders.forEach((order: any, index: number) => {
+      const isCompleted = order.status === 'completed';
+      const emoji = isCompleted ? '✅' : '❌';
+      const date = order.completed_at || order.cancelled_at;
+      const dateStr = date ? new Date(date).toLocaleDateString('id-ID') : '-';
+      
+      historyList += `${index + 1}. ${emoji} *#${order.id.substring(0, 8)}*\n`;
+      historyList += `   ${order.product_name}\n`;
+      historyList += `   💵 Rp ${order.buyer_price.toLocaleString('id-ID')}\n`;
+      historyList += `   📅 ${dateStr}\n\n`;
+    });
+    
+    historyList += '━━━━━━━━━━━━━━━\nBalas DASHBOARD untuk kembali';
+    
+    await sendWhatsApp({ phone, message: `✅ ${historyList}` });
+    return 'Supplier history sent';
+    
+  } catch (error) {
+    console.error('[handleSupplierHistory] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Gagal memuat riwayat.' });
+    return 'Error loading history';
+  }
+}
+
+/**
+ * Handle supplier help (BANTUAN)
+ */
+async function handleSupplierHelp(phone: string): Promise<string> {
+  const helpMessage = `📚 *Bantuan Supplier*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat pesanan aktif\n📜 *RIWAYAT* - Riwayat pesanan\n💰 *SALDO* - Cek saldo\n\n📨 *Respons Order:*\n✅ *SANGGUP KIRIM* - Terima & antar sendiri\n✅ *SANGGUP AMBIL* - Terima, butuh kurir\n❌ *TIDAK* - Tolak pesanan\n🚫 *BATAL* - Batalkan order aktif\n\n━━━━━━━━━━━━━━━\n❓ Butuh bantuan lain?\nHubungi admin: 0812-xxxx-xxxx`;
+  
+  await sendWhatsApp({ phone, message: `✅ ${helpMessage}` });
+  return 'Supplier help sent';
+}
+
+// ========================
+// COURIER DASHBOARD HANDLERS
+// ========================
+
+/**
+ * Handle courier dashboard (DASHBOARD)
+ */
+async function handleCourierDashboard(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id, name, is_busy, vehicle')
+      .eq('phone', phone)
+      .eq('role', 'courier')
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ Kurir tidak ditemukan.' });
+      return 'Courier not found';
+    }
+    
+    // Get wallet balance
+    const { data: wallet } = await (supabase.from('wallets') as any)
+      .select('available, escrow_held')
+      .eq('user_id', user.id)
+      .single();
+    
+    const available = wallet?.available || 0;
+    const escrow = wallet?.escrow_held || 0;
+    
+    // Count active deliveries
+    const { count: activeDeliveries } = await (supabase.from('orders') as any)
+      .select('*', { count: 'exact', head: true })
+      .eq('courier_id', user.id)
+      .in('status', ['paid_held', 'shipping']);
+    
+    // Count completed this month
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    
+    const { count: monthlyDeliveries } = await (supabase.from('orders') as any)
+      .select('*', { count: 'exact', head: true })
+      .eq('courier_id', user.id)
+      .eq('status', 'completed')
+      .gte('delivered_at', startOfMonth.toISOString());
+    
+    const statusEmoji = user.is_busy ? '🔴' : '🟢';
+    const statusText = user.is_busy ? 'Sedang Antar' : 'Tersedia';
+    const vehicleEmoji = user.vehicle === 'motor' ? '🏍️' : '🚙';
+    
+    const dashboardMessage = `🚚 *Dashboard Kurir*\n━━━━━━━━━━━━━━━\n\n👋 Halo, *${user.name}*!\n${statusEmoji} Status: ${statusText}\n${vehicleEmoji} Kendaraan: ${user.vehicle || 'N/A'}\n\n💰 *Saldo*\n├ Tersedia: Rp ${available.toLocaleString('id-ID')}\n└ Ditahan: Rp ${escrow.toLocaleString('id-ID')}\n\n📦 *Pengiriman*\n├ Aktif: ${activeDeliveries || 0} job\n└ Bulan ini: ${monthlyDeliveries || 0} selesai\n\n━━━━━━━━━━━━━━━\n📌 *Perintah:*\n• ORDER - Lihat job aktif\n• RIWAYAT - Lihat riwayat\n• SALDO - Cek saldo detail\n• BANTUAN - Menu lengkap`;
+    
+    await sendWhatsApp({ phone, message: `✅ ${dashboardMessage}` });
+    return 'Courier dashboard sent';
+    
+  } catch (error) {
+    console.error('[handleCourierDashboard] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Gagal memuat dashboard.' });
+    return 'Error loading dashboard';
+  }
+}
+
+/**
+ * Handle courier active orders (ORDER)
+ */
+async function handleCourierOrders(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id, name')
+      .eq('phone', phone)
+      .eq('role', 'courier')
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ Kurir tidak ditemukan.' });
+      return 'Courier not found';
+    }
+    
+    // Get active delivery jobs
+    const { data: orders } = await (supabase.from('orders') as any)
+      .select(`
+        id, product_name, shipping_cost, status, 
+        supplier:users!orders_supplier_id_fkey(name, address, business_name),
+        buyer:users!orders_buyer_id_fkey(name)
+      `)
+      .eq('courier_id', user.id)
+      .in('status', ['paid_held', 'shipping'])
+      .order('created_at', { ascending: false })
+      .limit(5);
+    
+    if (!orders || orders.length === 0) {
+      await sendWhatsApp({ phone, message: '✅ Tidak ada job aktif saat ini.\n\nTunggu penawaran job dari sistem!' });
+      return 'No active orders';
+    }
+    
+    const statusEmoji: Record<string, string> = {
+      'paid_held': '💰',
+      'shipping': '📦',
+    };
+    
+    const statusText: Record<string, string> = {
+      'paid_held': 'Siap Pickup',
+      'shipping': 'Sedang Antar',
+    };
+    
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    let orderList = '🚚 *Job Aktif*\n━━━━━━━━━━━━━━━\n\n';
+    
+    orders.forEach((order: any, index: number) => {
+      const supplierName = order.supplier?.business_name || order.supplier?.name || 'Supplier';
+      const supplierAddress = order.supplier?.address || 'Hubungi supplier';
+      const emoji = statusEmoji[order.status] || '📋';
+      const status = statusText[order.status] || order.status;
+      
+      orderList += `${index + 1}. *#${order.id.substring(0, 8)}*\n`;
+      orderList += `   ${order.product_name}\n`;
+      orderList += `   💵 Ongkir: Rp ${order.shipping_cost?.toLocaleString('id-ID') || 0}\n`;
+      orderList += `   ${emoji} ${status}\n`;
+      orderList += `   📍 ${supplierAddress.substring(0, 30)}...\n`;
+      orderList += `   🗺️ ${baseUrl}/track/${order.id}/courier\n\n`;
+    });
+    
+    orderList += '━━━━━━━━━━━━━━━\n• SELESAI - Tandai selesai antar\n• Balas DASHBOARD untuk kembali';
+    
+    await sendWhatsApp({ phone, message: `✅ ${orderList}` });
+    return 'Courier orders sent';
+    
+  } catch (error) {
+    console.error('[handleCourierOrders] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Gagal memuat job.' });
+    return 'Error loading orders';
+  }
+}
+
+/**
+ * Handle courier delivery history (RIWAYAT)
+ */
+async function handleCourierHistory(phone: string): Promise<string> {
+  const supabase = createAdminClient();
+  
+  try {
+    const { data: user } = await (supabase.from('users') as any)
+      .select('id')
+      .eq('phone', phone)
+      .eq('role', 'courier')
+      .single();
+    
+    if (!user) {
+      await sendWhatsApp({ phone, message: '❌ Kurir tidak ditemukan.' });
+      return 'Courier not found';
+    }
+    
+    // Get completed/cancelled deliveries
+    const { data: orders } = await (supabase.from('orders') as any)
+      .select('id, product_name, shipping_cost, status, delivered_at')
+      .eq('courier_id', user.id)
+      .in('status', ['completed', 'delivered'])
+      .order('delivered_at', { ascending: false })
+      .limit(10);
+    
+    if (!orders || orders.length === 0) {
+      await sendWhatsApp({ phone, message: '✅ Belum ada riwayat pengantaran.\n\nSelesaikan job untuk melihat riwayat!' });
+      return 'No delivery history';
+    }
+    
+    let historyList = '📜 *Riwayat Pengantaran*\n━━━━━━━━━━━━━━━\n\n';
+    
+    let totalEarned = 0;
+    orders.forEach((order: any, index: number) => {
+      const dateStr = order.delivered_at 
+        ? new Date(order.delivered_at).toLocaleDateString('id-ID') 
+        : '-';
+      const ongkir = order.shipping_cost || 0;
+      totalEarned += ongkir;
+      
+      historyList += `${index + 1}. ✅ *#${order.id.substring(0, 8)}*\n`;
+      historyList += `   ${order.product_name}\n`;
+      historyList += `   💵 Rp ${ongkir.toLocaleString('id-ID')}\n`;
+      historyList += `   📅 ${dateStr}\n\n`;
+    });
+    
+    historyList += `━━━━━━━━━━━━━━━\n💰 Total: Rp ${totalEarned.toLocaleString('id-ID')}\n\nBalas DASHBOARD untuk kembali`;
+    
+    await sendWhatsApp({ phone, message: `✅ ${historyList}` });
+    return 'Courier history sent';
+    
+  } catch (error) {
+    console.error('[handleCourierHistory] Error:', error);
+    await sendWhatsApp({ phone, message: '❌ Gagal memuat riwayat.' });
+    return 'Error loading history';
+  }
+}
+
+/**
+ * Handle courier help (BANTUAN)
+ */
+async function handleCourierHelp(phone: string): Promise<string> {
+  const helpMessage = `📚 *Bantuan Kurir*\n━━━━━━━━━━━━━━━\n\n📌 *Perintah Tersedia:*\n\n🏠 *DASHBOARD* - Menu utama\n📦 *ORDER* - Lihat job aktif\n📜 *RIWAYAT* - Riwayat pengantaran\n💰 *SALDO* - Cek saldo\n\n📨 *Respons Job:*\n✅ *AMBIL* - Terima job\n✅ *SELESAI* - Tandai selesai antar\n🚫 *BATAL* - Batalkan job\n\n━━━━━━━━━━━━━━━\n❓ Butuh bantuan lain?\nHubungi admin: 0812-xxxx-xxxx`;
+  
+  await sendWhatsApp({ phone, message: `✅ ${helpMessage}` });
+  return 'Courier help sent';
+}
+
+// Helper functions for location extraction
+function extractLat(location: unknown): number {
+  if (typeof location === 'string') {
+    const match = location.match(/POINT\(([-\d.]+)\s+([-\d.]+)\)/);
+    if (match) return parseFloat(match[2]);
+  }
+  return -6.2; // Default Jakarta
+}
+
+function extractLng(location: unknown): number {
+  if (typeof location === 'string') {
+    const match = location.match(/POINT\(([-\d.]+)\s+([-\d.]+)\)/);
+    if (match) return parseFloat(match[1]);
+  }
+  return 106.8;
 }
 
 /**

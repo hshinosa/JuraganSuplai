@@ -364,7 +364,7 @@ BEGIN
   ORDER BY distance_km ASC
   LIMIT max_results;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Find nearby available couriers
 CREATE OR REPLACE FUNCTION find_nearby_couriers(
@@ -400,7 +400,7 @@ BEGIN
   ORDER BY distance_km ASC
   LIMIT max_results;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Complete order and release escrow (atomic transaction)
 CREATE OR REPLACE FUNCTION complete_order_and_release_escrow(
@@ -436,7 +436,7 @@ BEGIN
   v_result := json_build_object('success', true, 'wallet_id', v_wallet_id);
   RETURN v_result;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Process escrow for payment
 CREATE OR REPLACE FUNCTION process_payment_escrow(
@@ -476,7 +476,7 @@ BEGIN
   v_result := json_build_object('success', true, 'wallet_id', v_wallet_id);
   RETURN v_result;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Process refund
 CREATE OR REPLACE FUNCTION process_refund(
@@ -506,7 +506,7 @@ BEGIN
   v_result := json_build_object('success', true);
   RETURN v_result;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- ==============================================
 -- ROW LEVEL SECURITY
