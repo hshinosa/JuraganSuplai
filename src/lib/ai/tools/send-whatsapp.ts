@@ -74,6 +74,9 @@ export async function sendWhatsApp(input: SendWhatsAppInput): Promise<string> {
       formData.append('url', imageUrl);
     }
     
+    console.log(`[sendWhatsApp] Sending to: ${formattedPhone} (original: ${phone})`);
+    console.log(`[sendWhatsApp] Token prefix: ${token.substring(0, 10)}...`);
+    
     const response = await fetch(FONNTE_API_URL, {
       method: 'POST',
       headers: {
@@ -83,6 +86,7 @@ export async function sendWhatsApp(input: SendWhatsAppInput): Promise<string> {
     });
     
     const result = await response.json();
+    console.log(`[sendWhatsApp] Fonnte response:`, JSON.stringify(result));
     
     if (!response.ok || result.status === false) {
       throw new Error(result.reason || result.message || 'Failed to send message');

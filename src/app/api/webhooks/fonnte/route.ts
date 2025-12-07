@@ -15,6 +15,7 @@ import {
   handleRoleSelection,
   handleSupplierName,
   handleSupplierBusinessName,
+  handleSupplierLocation,
   handleSupplierCategories,
   handlePhotoUpload,
   handleCourierName,
@@ -27,7 +28,7 @@ interface FonnteWebhookPayload {
   sender?: string; // Optional for status updates
   message?: string; // Optional for status updates
   url?: string; // Image/file URL
-  location?: {
+  location?: string | {  // Can be string "lat,lng" or object
     latitude: number;
     longitude: number;
   };
@@ -53,6 +54,34 @@ function formatPhoneNumber(phone: string): string {
 }
 
 /**
+ * Parse location from various formats
+ * Fonnte can send location as string "lat,lng" or object {latitude, longitude}
+ */
+function parseLocation(location: string | { latitude: number; longitude: number } | undefined): { latitude: number; longitude: number } | null {
+  if (!location) return null;
+  
+  // Handle string format "lat,lng"
+  if (typeof location === 'string') {
+    if (location.includes(',')) {
+      const [latStr, lngStr] = location.split(',');
+      const latitude = parseFloat(latStr.trim());
+      const longitude = parseFloat(lngStr.trim());
+      if (!isNaN(latitude) && !isNaN(longitude)) {
+        return { latitude, longitude };
+      }
+    }
+    return null;
+  }
+  
+  // Handle object format
+  if (typeof location === 'object' && location.latitude && location.longitude) {
+    return { latitude: location.latitude, longitude: location.longitude };
+  }
+  
+  return null;
+}
+
+/**
  * Handle incoming WhatsApp message
  */
 async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
@@ -64,7 +93,7 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   }
   
   const phone = formatPhoneNumber(payload.sender);
-  const message = payload.message;
+  let message = payload.message;
   
   // 🔴 FILTER: Ignore messages that are our own bot responses
   // Our bot messages ALL start with ✅ emoji - this is the most reliable filter
@@ -73,11 +102,23 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
     return 'Ignored bot message - starts with ✅';
   }
   
-  // Also filter out messages that contain Fonnte footer
-  // (happens rarely but Fonnte sometimes appends "Sent via fonnte.com" to echoed messages)
+  // 🔴 FILTER: Ignore "non-text message" placeholder from Fonnte
+  // This happens when user sends image/sticker/location without text
+  if (message === 'non-text message' || message === 'non-button message') {
+    // Check if there's a URL (image) to process
+    if (payload.url) {
+      console.log(`[Webhook] Non-text message with image URL: ${payload.url}`);
+      // Let it continue to image handling below
+    } else {
+      console.log(`[Webhook] ✓ Ignoring non-text message without URL from ${phone}`);
+      return 'Ignored non-text message';
+    }
+  }
+  
+  // Remove Fonnte footer from message if present (don't filter, just clean)
   if (message.includes('Sent via fonnte.com') || message.includes('sent via fonnte.com')) {
-    console.log(`[Webhook] ✓ Ignoring Fonnte system footer message from ${phone}`);
-    return 'Ignored Fonnte system message';
+    message = message.replace(/\n?\|?\s*[Ss]ent via fonnte\.com/gi, '').trim();
+    console.log(`[Webhook] Cleaned Fonnte footer, message now: "${message}"`);
   }
   
   console.log(`[Webhook] Message from ${phone}: ${message}`);
@@ -121,11 +162,19 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
         return success ? 'Name saved' : 'Invalid name';
       }
 
-      if (onboardingStep === 'business_name_input' || onboardingStep === 'location_share') {
-        console.log(`[Supplier] Step: business_name_input (or legacy location_share)`);
-        // location_share is legacy step, treat as business_name_input
+      if (onboardingStep === 'business_name_input') {
+        console.log(`[Supplier] Step: business_name_input`);
         const success = await handleSupplierBusinessName(phone, message);
         return success ? 'Business name saved' : 'Invalid business name';
+      }
+
+      // supplier_location maps to location_share in DB
+      if (onboardingStep === 'location_share') {
+        console.log(`[Supplier] Step: supplier_location (mapped to location_share)`);
+        // Parse location if user shared GPS coordinates
+        const parsedLocation = parseLocation(payload.location);
+        const success = await handleSupplierLocation(phone, message, parsedLocation || undefined);
+        return success ? 'Location saved' : 'Invalid location';
       }
 
       if (onboardingStep === 'categories_select' || onboardingStep === 'details_input') {
@@ -138,17 +187,22 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
       if (onboardingStep === 'awaiting_ktp' || onboardingStep === 'awaiting_selfie' || onboardingStep === 'verification') {
         console.log(`[Supplier] Step: photo upload (${onboardingStep})`);
         // verification is legacy step for photos
-        // Handle photo upload
+        
+        // Check if Fonnte sends image URL (requires All Feature Package)
         if (payload.url) {
           console.log(`[Onboarding] Photo upload detected: ${payload.url}`);
           const success = await handlePhotoUpload(phone, payload.url);
           return success ? 'Photo verified' : 'Photo verification failed';
         } else {
+          // No URL available - redirect to web verification
+          const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+          const verificationUrl = `${baseUrl}/verify/${phone}`;
+          
           await sendWhatsApp({
             phone,
-            message: '❌ Silakan kirim foto, bukan teks.',
+            message: `📸 *Verifikasi Foto KTP & Selfie*\n\nUntuk verifikasi, silakan klik link berikut:\n\n👉 ${verificationUrl}\n\nUpload foto KTP dan selfie melalui browser untuk melanjutkan pendaftaran.`,
           });
-          return 'Waiting for photo';
+          return 'Redirected to web verification';
         }
       }
     }
@@ -202,8 +256,11 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   }
   
   // Check if this is a location update (bypass agent)
-  if (payload.location) {
-    return await handleLocationUpdate(phone, payload.location);
+  // Fonnte sends location as string "lat,lng" format
+  const parsedLocation = parseLocation(payload.location);
+  if (parsedLocation) {
+    console.log(`[Webhook] Parsed location: lat=${parsedLocation.latitude}, lng=${parsedLocation.longitude}`);
+    return await handleLocationUpdate(phone, parsedLocation);
   }
   
   // If user is registered and not in onboarding, handle order commands
@@ -1599,16 +1656,19 @@ export async function POST(request: NextRequest) {
     // Check if this is location-only update or image upload (no message text)
     if (!payload.message) {
       if (payload.location) {
-        console.log(`[${requestId}] Location-only update from ${payload.sender}`);
-        await handleLocationUpdate(
-          formatPhoneNumber(payload.sender),
-          payload.location
-        );
-        return NextResponse.json({ 
-          success: true, 
-          type: 'location',
-          requestId 
-        });
+        const parsedLocation = parseLocation(payload.location);
+        if (parsedLocation) {
+          console.log(`[${requestId}] Location-only update from ${payload.sender}`);
+          await handleLocationUpdate(
+            formatPhoneNumber(payload.sender),
+            parsedLocation
+          );
+          return NextResponse.json({ 
+            success: true, 
+            type: 'location',
+            requestId 
+          });
+        }
       }
       
       // Check for image/file upload (Fonnte sends image with url field)

@@ -12,6 +12,7 @@ export type OnboardingState =
   | 'awaiting_role' 
   | 'name_input' 
   | 'business_name_input' 
+  | 'supplier_location'
   | 'categories_select' 
   | 'awaiting_ktp' 
   | 'awaiting_selfie' 
@@ -93,7 +94,7 @@ export async function handleRoleSelection(phone: string, input: string): Promise
   if (actualRole === 'supplier') {
     await sendWhatsApp({ 
       phone, 
-      message: '✅ Anda terdaftar sebagai *SUPPLIER*\n\n📝 *Step 1/5: Nama Lengkap*\n\nBalas dengan nama lengkap Anda:\n\nContoh: "Ucup Santoso"' 
+      message: '✅ Anda terdaftar sebagai *SUPPLIER*\n\n📝 *Step 1/6: Nama Lengkap*\n\nBalas dengan nama lengkap Anda:\n\nContoh: "Ucup Santoso"' 
     });
   } else {
     await sendWhatsApp({ 
@@ -112,6 +113,7 @@ export async function handleRoleSelection(phone: string, input: string): Promise
 export function mapStepToDatabase(newStep: string): string {
   const stepMap: Record<string, string> = {
     'business_name_input': 'location_share', // Old step name that exists in DB
+    'supplier_location': 'location_share',   // Map to existing location_share step
     'categories_select': 'details_input',     // Old step name that exists in DB
     'awaiting_ktp': 'verification',           // Old step name that exists in DB
     'awaiting_selfie': 'verification',        // Old step name that exists in DB
@@ -188,7 +190,7 @@ export async function handleSupplierName(phone: string, input: string): Promise<
     
     await sendWhatsApp({ 
       phone, 
-      message: `✅ Nama lengkap: *${name}*\n\n🏪 *Step 2/5: Nama Toko/Usaha*\n\nBalas dengan nama toko atau bisnis Anda:\n\nContoh: "Toko Sayuran Segar"` 
+      message: `✅ Nama lengkap: *${name}*\n\n🏪 *Step 2/6: Nama Toko/Usaha*\n\nBalas dengan nama toko atau bisnis Anda:\n\nContoh: "Toko Sayuran Segar"` 
     });
     
     console.log(`[handleSupplierName] Message sent successfully`);
@@ -240,7 +242,7 @@ export async function handleSupplierBusinessName(phone: string, input: string): 
     const onboardingData = (userData?.onboarding_data || {}) as OnboardingData;
     onboardingData.businessName = businessName;
     
-    const dbStep = mapStepToDatabase('categories_select');
+    const dbStep = mapStepToDatabase('supplier_location');
     console.log(`[handleSupplierBusinessName] Updating database - business_name: "${businessName}", step: "${dbStep}"`);
     
     const { error: upsertError, data } = await (supabase.from('users') as any)
@@ -266,16 +268,109 @@ export async function handleSupplierBusinessName(phone: string, input: string): 
     
     console.log(`[handleSupplierBusinessName] Database updated successfully:`, data);
     
-    const categoryMessage = getCategorySelectionMessage();
-    const fullMessage = `✅ Nama toko: *${businessName}*\n\n🏷️ *Step 3/5: Kategori Produk*\n\n${categoryMessage}`;
+    const locationMessage = `✅ Nama toko: *${businessName}*\n\n📍 *Step 3/6: Lokasi Toko*\n\nKirimkan lokasi toko Anda dengan salah satu cara:\n\n1️⃣ *Share Location* - Klik 📎 → Location → Share current location\n\n2️⃣ *Ketik Alamat* - Tulis alamat lengkap toko Anda\n\nContoh: "Jl. Merdeka No. 123, Bandung"`;
     
-    console.log(`[handleSupplierBusinessName] Sending category selection message`);
-    await sendWhatsApp({ phone, message: fullMessage });
+    console.log(`[handleSupplierBusinessName] Sending location request message`);
+    await sendWhatsApp({ phone, message: locationMessage });
     
     console.log(`[handleSupplierBusinessName] Message sent successfully`);
     return true;
   } catch (error) {
     console.error(`[handleSupplierBusinessName] Exception:`, error);
+    await sendWhatsApp({ 
+      phone, 
+      message: '❌ Terjadi kesalahan. Coba lagi.' 
+    });
+    return false;
+  }
+}
+
+/**
+ * Handle supplier location input (address text or GPS coordinates)
+ */
+export async function handleSupplierLocation(
+  phone: string, 
+  input: string,
+  coordinates?: { latitude: number; longitude: number }
+): Promise<boolean> {
+  console.log(`[handleSupplierLocation] Start - Phone: ${phone}, Input: "${input}", Coords:`, coordinates);
+  
+  try {
+    const supabase = createAdminClient();
+    
+    const { data: userData, error: selectError } = await (supabase.from('users') as any)
+      .select('onboarding_data')
+      .eq('phone', phone)
+      .single();
+    
+    if (selectError) {
+      console.error(`[handleSupplierLocation] Select error:`, selectError);
+      await sendWhatsApp({ 
+        phone, 
+        message: '❌ Gagal mengambil data. Coba lagi.' 
+      });
+      return false;
+    }
+    
+    const onboardingData = (userData?.onboarding_data || {}) as OnboardingData;
+    
+    // Store address text
+    const address = input.trim() || 'Location shared via GPS';
+    onboardingData.address = address;
+    
+    // Prepare location data for PostGIS if coordinates provided
+    let locationPoint = null;
+    if (coordinates) {
+      // PostGIS format: POINT(longitude latitude)
+      locationPoint = `POINT(${coordinates.longitude} ${coordinates.latitude})`;
+      console.log(`[handleSupplierLocation] PostGIS point: ${locationPoint}`);
+    }
+    
+    const dbStep = mapStepToDatabase('categories_select');
+    console.log(`[handleSupplierLocation] Updating database - address: "${address}", step: "${dbStep}"`);
+    
+    const updateData: Record<string, unknown> = {
+      phone,
+      address,
+      onboarding_step: dbStep,
+      onboarding_data: onboardingData,
+    };
+    
+    // Add location if coordinates available
+    if (locationPoint) {
+      updateData.location = locationPoint;
+    }
+    
+    const { error: upsertError, data } = await (supabase.from('users') as any)
+      .upsert(updateData, { onConflict: 'phone' })
+      .select();
+    
+    if (upsertError) {
+      console.error(`[handleSupplierLocation] Upsert error:`, upsertError);
+      await sendWhatsApp({ 
+        phone, 
+        message: '❌ Gagal menyimpan lokasi. Coba lagi.' 
+      });
+      return false;
+    }
+    
+    console.log(`[handleSupplierLocation] Database updated successfully:`, data);
+    
+    // Send category selection message
+    const categoryMessage = getCategorySelectionMessage();
+    const locationConfirmation = coordinates 
+      ? `📍 Lokasi GPS tersimpan!` 
+      : `📍 Alamat: *${address}*`;
+    
+    const fullMessage = `✅ ${locationConfirmation}\n\n🏷️ *Step 4/6: Kategori Produk*\n\n${categoryMessage}`;
+    
+    console.log(`[handleSupplierLocation] Sending category selection message`);
+    await sendWhatsApp({ phone, message: fullMessage });
+    
+    console.log(`[handleSupplierLocation] Message sent successfully`);
+    return true;
+  } catch (error) {
+    console.error(`[handleSupplierLocation] Exception:`, error);
     await sendWhatsApp({ 
       phone, 
       message: '❌ Terjadi kesalahan. Coba lagi.' 
@@ -342,7 +437,7 @@ export async function handleSupplierCategories(phone: string, input: string): Pr
   
   await sendWhatsApp({ 
     phone, 
-    message: `✅ Kategori terpilih: *${categoryNames}*\n\n📸 *Step 4-5/5: Verifikasi Foto*\n\nKlik link di bawah untuk upload foto KTP dan Selfie:\n\n${verificationUrl}\n\nFoto akan diverifikasi otomatis oleh AI.` 
+    message: `✅ Kategori terpilih: *${categoryNames}*\n\n📸 *Step 5-6/6: Verifikasi Foto*\n\nKlik link di bawah untuk upload foto KTP dan Selfie:\n\n${verificationUrl}\n\nFoto akan diverifikasi otomatis oleh AI.` 
   });
   
   return true;
