@@ -54,6 +54,7 @@ export async function sendWhatsApp(input: SendWhatsAppInput): Promise<string> {
   
   const formattedPhone = formatPhoneNumber(phone);
   const token = process.env.FONNTE_TOKEN;
+  const supabase = createAdminClient();
   
   if (!token) {
     console.error('[sendWhatsApp] FONNTE_TOKEN not configured');
@@ -67,6 +68,7 @@ export async function sendWhatsApp(input: SendWhatsAppInput): Promise<string> {
     const formData = new FormData();
     formData.append('target', formattedPhone);
     formData.append('message', message);
+    formData.append('disable_url_preview', 'true'); // Disable URL preview to keep message clean
     
     if (imageUrl) {
       formData.append('url', imageUrl);
@@ -161,3 +163,4 @@ registerTool('sendWhatsApp', async (input) => {
 });
 
 export default sendWhatsApp;
+

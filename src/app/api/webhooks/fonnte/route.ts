@@ -8,6 +8,17 @@ import { createAdminClient } from '@/lib/supabase/server';
 import { runAgent } from '@/lib/ai/executor';
 import '@/lib/ai/tools'; // Register all tools
 import { sendWhatsApp } from '@/lib/ai/tools/send-whatsapp';
+import {
+  startOnboarding,
+  handleRoleSelection,
+  handleSupplierName,
+  handleSupplierBusinessName,
+  handleSupplierCategories,
+  handlePhotoUpload,
+  handleCourierName,
+  handleCourierAddress,
+  handleCourierVehicle,
+} from '@/lib/onboarding/handler';
 
 interface FonnteWebhookPayload {
   device: string;
@@ -54,105 +65,111 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   const message = payload.message;
   
   // 🔴 FILTER: Ignore messages that are our own bot responses
-  // These come back as Fonnte webhook notifications, not user messages
-  const botMessagePatterns = [
-    '✅ Halo',           // Our DAFTAR reply
-    'Halo! 👋',          // Our quick reply
-    'Sent via fonnte.com' // Fonnte footer (indicates it's a sent message, not received)
-  ];
+  // Our bot messages ALL start with ✅ emoji - this is the most reliable filter
+  if (message.startsWith('✅')) {
+    console.log(`[Webhook] ✓ Ignoring outgoing bot message from ${phone}`);
+    return 'Ignored bot message - starts with ✅';
+  }
   
-  if (botMessagePatterns.some(pattern => message.includes(pattern))) {
-    console.log(`[Webhook] ✓ Ignoring bot message from ${phone} (message: "${message.substring(0, 40)}...")`);
-    return 'Ignored bot message';
+  // Also filter out messages that contain Fonnte footer
+  // (happens rarely but Fonnte sometimes appends "Sent via fonnte.com" to echoed messages)
+  if (message.includes('Sent via fonnte.com') || message.includes('sent via fonnte.com')) {
+    console.log(`[Webhook] ✓ Ignoring Fonnte system footer message from ${phone}`);
+    return 'Ignored Fonnte system message';
   }
   
   console.log(`[Webhook] Message from ${phone}: ${message}`);
 
-  // DAFTAR MANUAL - Format: DAFTAR#NamaLengkap#role
-  if (message.includes('DAFTAR#')) {
-    try {
-      console.log(`[DAFTAR] Processing registration from ${phone}`);
-      
-      // Parse message: DAFTAR#Ucup#buyer
-      const parts = message.split('#');
-      const inputName = parts[1]?.trim();
-      const inputRaw = parts[2]?.trim().toLowerCase();
-      
-      // Validate inputs
-      if (!inputName) {
-        const errorMsg = 'Format: DAFTAR#NamaLengkap#role (contoh: DAFTAR#Ucup#buyer)';
-        console.warn(`[DAFTAR] Missing name from ${phone}`);
-        await sendWhatsApp({ phone, message: errorMsg });
-        return errorMsg;
+  // Check if user is in onboarding
+  const { data: userData, error: userError } = await (supabase
+    .from('users') as any)
+    .select('onboarding_step, role, onboarding_data')
+    .eq('phone', phone)
+    .single();
+  
+  const onboardingStep = userData?.onboarding_step || null;
+  const userRole = userData?.role || null;
+  const onboardingData = userData?.onboarding_data || {};
+
+  console.log(`[Webhook] User: ${phone} | Step: ${onboardingStep} | Role: ${userRole} | Message: "${message.substring(0, 30)}"`);
+
+  // NEW FLOW: User ini baru pertama kali atau ingin daftar
+  if (message.toLowerCase().includes('daftar') && !userRole) {
+    console.log(`[Onboarding] Starting onboarding for ${phone}`);
+    await startOnboarding(phone);
+    return 'Onboarding started';
+  }
+
+  // ONBOARDING STATE MACHINE
+  if (onboardingStep && onboardingStep !== 'completed') {
+    console.log(`[Onboarding] Processing step: ${onboardingStep}, Role: ${userRole}`);
+
+    // Handle role selection
+    if (onboardingStep === 'role_selection') {
+      console.log(`[Onboarding] Handling role selection`);
+      const success = await handleRoleSelection(phone, message);
+      return success ? 'Role selected' : 'Invalid role input';
+    }
+
+    // Handle supplier flow
+    if (userRole === 'supplier') {
+      if (onboardingStep === 'name_input') {
+        console.log(`[Supplier] Step: name_input`);
+        const success = await handleSupplierName(phone, message);
+        return success ? 'Name saved' : 'Invalid name';
       }
-      
-      // Validate and default role
-      const validRoles = ['buyer', 'supplier', 'courier'];
-      const inputRole = validRoles.includes(inputRaw) ? inputRaw : 'buyer';
-      
-      if (!validRoles.includes(inputRaw)) {
-        console.warn(`[DAFTAR] Invalid role '${inputRaw}' from ${phone}, defaulting to 'buyer'`);
+
+      if (onboardingStep === 'business_name_input' || onboardingStep === 'location_share') {
+        console.log(`[Supplier] Step: business_name_input (or legacy location_share)`);
+        // location_share is legacy step, treat as business_name_input
+        const success = await handleSupplierBusinessName(phone, message);
+        return success ? 'Business name saved' : 'Invalid business name';
       }
-      
-      // Insert/update user with retry logic
-      console.log(`[DAFTAR] Inserting user: ${inputName} (${inputRole}) at ${phone}`);
-      
-      let lastError: any = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const { data, error } = await (supabase
-            .from('users') as any)
-            .upsert({
-              phone,
-              name: inputName,
-              role: inputRole,
-              onboarding_step: 'completed',
-              is_verified: true,
-              updated_at: new Date().toISOString(),
-            }, { onConflict: 'phone' })
-            .select();
-          
-          if (error) {
-            lastError = error;
-            throw error;
-          }
-          
-          // Success!
-          console.log(`[DAFTAR] Successfully registered ${inputName} (${inputRole}) - ${phone}`);
-          const replyMessage = `✅ Halo ${inputName}!\nPendaftaran berhasil sebagai *${inputRole.toUpperCase()}*\n\n📍 *Langkah berikutnya: Kirim Lokasi*\n\nFormat:\n\`LOKASI#latitude#longitude\`\n\nContoh untuk Jakarta:\n\`LOKASI#-6.2088#106.8456\`\n\nCara mendapat koordinat:\n1. Buka Google Maps\n2. Klik lokasi Anda\n3. Copy koordinat (lat,lng)\n\nKetik BANTUAN untuk bantuan lebih lanjut.`;
-          
-          await sendWhatsApp({ phone, message: replyMessage });
-          return replyMessage;
-          
-        } catch (error) {
-          lastError = error;
-          console.warn(`[DAFTAR] Attempt ${attempt}/3 failed for ${phone}:`, error);
-          
-          if (attempt < 3) {
-            // Wait before retry with exponential backoff
-            const waitTime = Math.pow(2, attempt) * 1000; // 2s, 4s
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-          }
+
+      if (onboardingStep === 'categories_select' || onboardingStep === 'details_input') {
+        console.log(`[Supplier] Step: categories_select (or legacy details_input)`);
+        // details_input is legacy step, treat as categories_select
+        const success = await handleSupplierCategories(phone, message);
+        return success ? 'Categories selected' : 'Invalid categories';
+      }
+
+      if (onboardingStep === 'awaiting_ktp' || onboardingStep === 'awaiting_selfie' || onboardingStep === 'verification') {
+        console.log(`[Supplier] Step: photo upload (${onboardingStep})`);
+        // verification is legacy step for photos
+        // Handle photo upload
+        if (payload.url) {
+          console.log(`[Onboarding] Photo upload detected: ${payload.url}`);
+          const success = await handlePhotoUpload(phone, payload.url);
+          return success ? 'Photo verified' : 'Photo verification failed';
+        } else {
+          await sendWhatsApp({
+            phone,
+            message: '❌ Silakan kirim foto, bukan teks.',
+          });
+          return 'Waiting for photo';
         }
       }
-      
-      // All retries failed
-      console.error(`[DAFTAR] All 3 retry attempts failed for ${phone}`);
-      const errorMsg = `Maaf, pendaftaran gagal: ${lastError?.message || 'Network error'}`;
-      await sendWhatsApp({ phone, message: errorMsg });
-      return errorMsg;
-      
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      console.error(`[DAFTAR] Unexpected error for ${phone}:`, error);
-      await sendWhatsApp({ 
-        phone, 
-        message: `Maaf, terjadi kesalahan: ${errorMsg}` 
-      });
-      return `Error: ${errorMsg}`;
+    }
+
+    // Handle courier flow
+    if (userRole === 'courier') {
+      if (onboardingStep === 'name_input') {
+        const success = await handleCourierName(phone, message);
+        return success ? 'Name saved' : 'Invalid name';
+      }
+
+      if (onboardingStep === 'location_share') {
+        const success = await handleCourierAddress(phone, message);
+        return success ? 'Address saved' : 'Invalid address';
+      }
+
+      if (onboardingStep === 'details_input') {
+        const success = await handleCourierVehicle(phone, message);
+        return success ? 'Vehicle selected' : 'Invalid vehicle';
+      }
     }
   }
-  
+
   // Check for LOKASI command: LOKASI#latitude#longitude
   if (message.startsWith('LOKASI#')) {
     const parts = message.split('#');
@@ -177,7 +194,7 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
   
   // Check for BANTUAN (HELP) command
   if (message.toUpperCase() === 'BANTUAN' || message.toUpperCase() === 'HELP') {
-    const helpMessage = `📖 *DAFTAR PERINTAH JURAGAN SUPLAI*\n\n1️⃣ *DAFTAR Registrasi*\n\`DAFTAR#Nama#role\`\nContoh: \`DAFTAR#Budi#supplier\`\nRole: supplier, kurir, atau buyer\n\n2️⃣ *LOKASI Kirim Lokasi*\n\`LOKASI#latitude#longitude\`\nContoh: \`LOKASI#-6.2088#106.8456\`\n\n3️⃣ *BANTUAN Bantuan*\nKetik BANTUAN untuk tampilkan pesan ini\n\n📞 Butuh bantuan lebih lanjut?\nHubungi admin: +6285294131193`;
+    const helpMessage = `📖 *DAFTAR PERINTAH JURAGAN SUPLAI*\n\n1️⃣ *DAFTAR Registrasi*\nKetik DAFTAR untuk memulai pendaftaran\n\n2️⃣ *LOKASI Kirim Lokasi*\n\`LOKASI#latitude#longitude\`\nContoh: \`LOKASI#-6.2088#106.8456\`\n\n3️⃣ *BANTUAN Bantuan*\nKetik BANTUAN untuk tampilkan pesan ini\n\n📞 Butuh bantuan lebih lanjut?\nHubungi admin: +6285294131193`;
     await sendWhatsApp({ phone, message: helpMessage });
     return helpMessage;
   }
@@ -187,12 +204,15 @@ async function handleMessage(payload: FonnteWebhookPayload): Promise<string> {
     return await handleLocationUpdate(phone, payload.location);
   }
   
-  // For non-DAFTAR messages, just log (don't reply)
-  // Bot will only reply to DAFTAR registration messages
-  // Other messages won't interrupt personal chats
-  console.log(`[Webhook] Non-DAFTAR message from ${phone}: "${message.substring(0, 50)}..."`);
-  console.log(`[Webhook] No reply sent (waiting for Agent implementation)`);
-  return 'Message logged, no reply';
+  // If user is registered and not in onboarding, could pass to agent here
+  if (onboardingStep === 'completed' && userRole) {
+    console.log(`[Webhook] User ${phone} is registered (role: ${userRole}). Passing to agent...`);
+    // TODO: Implement agent flow for ongoing order management
+  }
+  
+  // Default: log message
+  console.log(`[Webhook] Non-command message from ${phone}: "${message.substring(0, 50)}..."`);
+  return 'Message logged';
 }
 
 /**
@@ -276,7 +296,14 @@ export async function POST(request: NextRequest) {
     const payload = await request.json() as FonnteWebhookPayload;
     
     // ✅ Log incoming payload untuk debugging
-    console.log(`[${requestId}] Incoming webhook payload:`, JSON.stringify(payload, null, 2));
+    console.log(`\n========== WEBHOOK PAYLOAD ${requestId} ==========`);
+    console.log(`[${requestId}] RAW PAYLOAD:`, JSON.stringify(payload, null, 2));
+    console.log(`[${requestId}] TYPE field:`, payload.type);
+    console.log(`[${requestId}] URL field:`, payload.url);
+    console.log(`[${requestId}] MESSAGE field:`, payload.message?.substring(0, 100));
+    console.log(`[${requestId}] FILENAME field:`, (payload as any).filename);
+    console.log(`[${requestId}] ALL KEYS:`, Object.keys(payload));
+    console.log(`==========================================\n`);
     
     // Handle connection status (connect/disconnect)
     if ((payload as any).status && ((payload as any).status === 'connect' || (payload as any).status === 'disconnect')) {
@@ -329,7 +356,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, type: 'skipped', requestId }, { status: 200 });
     }
     
-    // Check if this is location-only update (no message)
+    // Check if this is location-only update or image upload (no message text)
     if (!payload.message) {
       if (payload.location) {
         console.log(`[${requestId}] Location-only update from ${payload.sender}`);
@@ -344,9 +371,28 @@ export async function POST(request: NextRequest) {
         });
       }
       
-      console.warn(`[${requestId}] No message or location in payload`);
+      // Check for image/file upload (Fonnte sends image with url field)
+      if (payload.url && payload.sender) {
+        console.log(`[${requestId}] 🖼️  Image detected: ${payload.url}`);
+        const phone = formatPhoneNumber(payload.sender);
+        const response = await handleMessage({
+          sender: payload.sender,
+          message: '[image]', // Placeholder to pass the message guard
+          url: payload.url,
+          device: payload.device,
+          type: payload.type,
+        });
+        return NextResponse.json({
+          success: true,
+          type: 'image',
+          response: response.substring(0, 100),
+          requestId,
+        });
+      }
+      
+      console.warn(`[${requestId}] ⚠️  No message, location, or image in payload. Fields:`, JSON.stringify(payload, null, 2));
       return NextResponse.json(
-        { error: 'Missing message or location', requestId },
+        { error: 'Missing message, location, or image', requestId },
         { status: 400 }
       );
     }

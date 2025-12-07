@@ -13,18 +13,15 @@ import type { OrderInsert } from '@/types/database';
 import { revalidatePath } from 'next/cache';
 
 interface RequestItemInput {
-    buyerId: string;
-    productName: string;
-    category?: string;
-    productNotes?: string;
-    deliveryNotes?: string;
-    quantity: number;
-    unit: string;
-    estimatedWeight: number;
-    expectedPrice: number;
-    deliveryAddress: string;
-    deliveryLat: number;
-    deliveryLng: number;
+  buyerId: string;
+  productName: string;
+  quantity: number;
+  unit: string;
+  estimatedWeight: number;
+  expectedPrice: number;
+  deliveryAddress: string;
+  deliveryLat: number;
+  deliveryLng: number;
 }
 
 interface RequestItemResult {
@@ -170,6 +167,67 @@ export async function actionRequestItem(
             message: 'Terjadi kesalahan. Silakan coba lagi.',
         };
     }
+    
+    // 3. Broadcast to suppliers
+    const broadcastPromises = suppliersResult.suppliers.map(async (supplier: {
+      id: string;
+      name: string;
+      phone: string;
+      distance_km: number;
+      product: string;
+      price: number;
+    }) => {
+      // Record broadcast
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (supabase.from('order_broadcasts') as any).insert({
+        order_id: order.id,
+        supplier_id: supplier.id,
+      });
+      
+      // Send WhatsApp
+      const message = templates.supplierOffer({
+        product_name: input.productName,
+        quantity: input.quantity,
+        unit: input.unit,
+        weight_kg: input.estimatedWeight,
+        buyer_address: input.deliveryAddress,
+        distance_km: supplier.distance_km,
+        buyer_price: input.expectedPrice,
+        order_id: order.id,
+      });
+      
+      return sendWhatsApp({ phone: supplier.phone, message });
+    });
+    
+    await Promise.all(broadcastPromises);
+    
+    // 4. Log agent action
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabase.from('agent_logs') as any).insert({
+      order_id: order.id,
+      iteration: 1,
+      thought: `Buyer requested ${input.productName}. Broadcasting to ${suppliersResult.found} suppliers.`,
+      action: 'broadcastToSuppliers',
+      action_input: { suppliers: suppliersResult.suppliers.map((s: { id: string }) => s.id) },
+      observation: `Broadcasted to ${suppliersResult.found} suppliers`,
+    });
+    
+    revalidatePath('/dashboard/buyer');
+    
+    return {
+      success: true,
+      orderId: order.id,
+      suppliersContacted: suppliersResult.found,
+      message: `Pesanan dibuat! Menghubungi ${suppliersResult.found} supplier terdekat...`,
+    };
+    
+  } catch (error) {
+    console.error('[actionRequestItem] Error:', error);
+    return {
+      success: false,
+      message: 'Terjadi kesalahan. Silakan coba lagi.',
+    };
+  }
 }
 
 /**

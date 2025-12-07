@@ -65,7 +65,7 @@ async function callKolosalAPI(messages: AgentMessage[]): Promise<AgentResponse> 
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': apiKey, // Note: Kolosal uses direct key, not Bearer
+      'Authorization': `Bearer ${apiKey}`,
       'X-Workspace-ID': workspaceId,
     },
     body: JSON.stringify({
